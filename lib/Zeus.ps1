@@ -110,8 +110,13 @@ function Zeus_Read {
         $e = $ns.eq
         $c.txEq.enabled = ConvertTo-BoolVal $e.requestedEnabled $false
         $c.txEq.preampDb = ConvertTo-Num $e.'param:input-gain-db' 0
-        $pts = @(for ($i = 1; $i -le 10; $i++) { @{ freqHz = [double](ConvertTo-Num $e."param:band-$i-freq-hz"); gainDb = [double](ConvertTo-Num $e."param:band-$i-gain-db" 0); q = [double](ConvertTo-Num $e."param:band-$i-q" 1) } })
-        $c.txEq.curve = [ordered]@{ parametric = $true; globalGainDb = 0.0; useQ = $true; points = $pts; freqMinHz = $null; freqMaxHz = $null }
+        # band-N-type: 0 = Peak, 1 = Lo Shelf, 2 = Hi Shelf (confirmed from the 2026-10-24 API backup)
+        $zt = @{ '0' = 'Peak'; '1' = 'LowShelf'; '2' = 'HighShelf' }
+        $pts = @(for ($i = 1; $i -le 10; $i++) {
+            $raw = "$($e."param:band-$i-type")"; $t = if ($raw -eq '') { 'Peak' } elseif ($zt.ContainsKey($raw)) { $zt[$raw] } else { Add-Note $c "Zeus EQ band $i has unknown type '$raw' - treated as Peak."; 'Peak' }
+            @{ freqHz = [double](ConvertTo-Num $e."param:band-$i-freq-hz"); gainDb = [double](ConvertTo-Num $e."param:band-$i-gain-db" 0); q = [double](ConvertTo-Num $e."param:band-$i-q" 1); type = $t } })
+        $c.txEq.outputDb = if ($null -ne $e.'param:output-gain-db') { [double](ConvertTo-Num $e.'param:output-gain-db' 0) } else { $null }
+        $c.txEq.curve = [ordered]@{ parametric = $true; globalGainDb = 0.0; useQ = $true; qModel = 'rbj'; points = $pts; freqMinHz = $null; freqMaxHz = $null }
         $c.txEq.legacy = @(foreach ($q in $pts) { [ordered]@{ freqHz = $q.freqHz; gainDb = $q.gainDb } })
         $c.txEq.mode = 'parametric'
     }
@@ -124,6 +129,35 @@ function Zeus_Read {
         $mapped = @($u.f.Values); $extra = [ordered]@{}
         foreach ($pp in $u.s.PSObject.Properties) { if ($pp.Name -like 'param:*') { $id = $pp.Name.Substring(6); if ($mapped -notcontains $id) { $n = ConvertTo-Num $pp.Value; if ($null -ne $n) { $extra[$id] = $n } } } }
         if ($extra.Count) { $c[$u.k]['extra'] = $extra }
+    }
+    # --- Zeus-only native units, carried for single-chain destinations (AetherTX) ---
+    if ($ns) {
+        $n  = { param($s, [string]$k, $d = $null) ConvertTo-Num $s."param:$k" $d }
+        $on = { param($s) ConvertTo-BoolVal $s.requestedEnabled $false }
+        $s = $ns.'input-strip'
+        if ($s) { $c.inputStrip = [ordered]@{ enabled = (& $on $s); trimDb = (& $n $s 'trim-db'); hpfHz = (& $n $s 'hpf-hz'); hpfSlopeDb = (& $n $s 'hpf-slope-db'); lpfHz = (& $n $s 'lpf-hz'); rotatorStages = (& $n $s 'rotator-stages'); rotatorHz = (& $n $s 'rotator-hz'); invert = ((& $n $s 'invert' 0) -ge 1) } }
+        $s = $ns.'de-esser'
+        if ($s) { $c.deEsser = [ordered]@{ enabled = (& $on $s); frequencyHz = (& $n $s 'frequency-hz'); thresholdDb = (& $n $s 'threshold-db'); ratio = (& $n $s 'ratio'); rangeDb = (& $n $s 'range-db'); attackMs = (& $n $s 'attack-ms'); releaseMs = (& $n $s 'release-ms'); wide = ((& $n $s 'wide' 0) -ge 1) } }
+        $s = $ns.'broadcast-agc'
+        if ($s) { $c.agc = [ordered]@{ enabled = (& $on $s); targetDb = (& $n $s 'target-db'); maxGainDb = (& $n $s 'max-gain-db'); maxCutDb = (& $n $s 'max-cut-db'); speedMs = (& $n $s 'speed-ms'); gateDb = (& $n $s 'gate-db') } }
+        $s = $ns.mbcomp
+        if ($s) {
+            $c.multiband = [ordered]@{ enabled = (& $on $s); driveDb = (& $n $s 'drive-db' 0); outputDb = (& $n $s 'output-db' 0); couplingPercent = (& $n $s 'coupling-percent')
+                crossoversHz = @((& $n $s 'crossover-1-hz'), (& $n $s 'crossover-2-hz'), (& $n $s 'crossover-3-hz'))
+                bands = @(for ($i = 1; $i -le 4; $i++) { [ordered]@{ thresholdDb = (& $n $s "band-$i-threshold-db"); ratio = (& $n $s "band-$i-ratio"); kneeDb = (& $n $s "band-$i-knee-db"); attackMs = (& $n $s "band-$i-attack-ms"); releaseMs = (& $n $s "band-$i-release-ms"); makeupDb = (& $n $s "band-$i-makeup-db" 0); bypass = ((& $n $s "band-$i-bypass" 0) -ge 1) } }) }
+        }
+        $s = $ns.saturation
+        if ($s) { $c.saturation = [ordered]@{ enabled = (& $on $s); driveDb = (& $n $s 'drive-db'); biasPercent = (& $n $s 'bias-percent'); toneHz = (& $n $s 'tone-hz'); mixPercent = (& $n $s 'mix-percent'); outputDb = (& $n $s 'output-db') } }
+        $s = $ns.exciter
+        if ($s) { $c.exciter = [ordered]@{ enabled = (& $on $s); frequencyHz = (& $n $s 'frequency-hz'); driveDb = (& $n $s 'drive-db'); mixPercent = (& $n $s 'mix-percent'); inputDb = (& $n $s 'input-db' 0); outputDb = (& $n $s 'output-db' 0) } }
+        $s = $ns.bass
+        if ($s) { $c.bassEnhancer = [ordered]@{ enabled = (& $on $s); frequencyHz = (& $n $s 'frequency-hz'); amountPercent = (& $n $s 'amount-percent'); mixPercent = (& $n $s 'mix-percent'); inputDb = (& $n $s 'input-db' 0); outputDb = (& $n $s 'output-db' 0) } }
+        $s = $ns.reverb
+        if ($s) { $c.reverb = [ordered]@{ enabled = (& $on $s); sizePercent = (& $n $s 'size-percent'); decayPercent = (& $n $s 'decay-percent'); dampPercent = (& $n $s 'damp-percent'); preDelayMs = (& $n $s 'pre-delay-ms'); mixPercent = (& $n $s 'mix-percent') } }
+        $s = $ns.limiter
+        if ($s) { $c.limiter = [ordered]@{ enabled = (& $on $s); inputDb = (& $n $s 'input-db' 0); ceilingDb = (& $n $s 'ceiling-db'); lookaheadMs = (& $n $s 'lookahead-ms'); releaseMs = (& $n $s 'release-ms'); autoRelease = ((& $n $s 'auto-release' 0) -ge 1); truePeak = ((& $n $s 'true-peak' 0) -ge 1) } }
+        foreach ($u in 'punch', 'denoise') { if ($ns.$u -and (& $on $ns.$u)) { $c.otherUnitsOn += $u } }
+        if ($ns.'native-chain' -and $ns.'native-chain'.order) { $c.chainOrder = @("$($ns.'native-chain'.order)" -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
     }
     return $c
 }

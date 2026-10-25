@@ -240,6 +240,58 @@ function ConvertTo-SdrBlob {
     $gz.Write($bytes, 0, $bytes.Length); $gz.Close()
     return ([Convert]::ToBase64String($ms.ToArray())).Replace('+', '-').Replace('/', '_').TrimEnd('=')
 }
+function Get-BiquadDb {
+    # Magnitude (dB) of one conventional (RBJ-cookbook style) EQ band at f Hz,
+    # as Zeus and AetherSDR define it: width scales with frequency, Q is relative.
+    # Analog prototype; at voice frequencies (<5 kHz, 48 kHz rate) the digital
+    # warp is negligible. HighPass/LowPass are Butterworth of order slope/6.
+    param([string]$type, [double]$f0, [double]$gainDb, [double]$q, [int]$slope, [double]$f)
+    if ($f0 -le 0 -or $f -le 0) { return 0.0 }
+    $w = $f / $f0
+    switch ($type) {
+        'HighPass' { $n = [math]::Max(1, [int][math]::Round($slope / 6)); return -10 * [math]::Log10(1 + [math]::Pow(1 / $w, 2 * $n)) }
+        'LowPass'  { $n = [math]::Max(1, [int][math]::Round($slope / 6)); return -10 * [math]::Log10(1 + [math]::Pow($w, 2 * $n)) }
+    }
+    if ($gainDb -eq 0) { return 0.0 }
+    if ($q -le 0) { $q = 0.707 }
+    $A = [math]::Pow(10, $gainDb / 40); $w2 = $w * $w
+    switch ($type) {
+        'LowShelf' {
+            $k = [math]::Sqrt($A) / $q * $w
+            $num = ($A - $w2) * ($A - $w2) + $k * $k; $den = (1 - $A * $w2) * (1 - $A * $w2) + $k * $k
+            return 20 * [math]::Log10($A) + 10 * [math]::Log10($num / $den)
+        }
+        'HighShelf' {
+            $k = [math]::Sqrt($A) / $q * $w
+            $num = (1 - $A * $w2) * (1 - $A * $w2) + $k * $k; $den = ($A - $w2) * ($A - $w2) + $k * $k
+            return 20 * [math]::Log10($A) + 10 * [math]::Log10($num / $den)
+        }
+        default {
+            $num = (1 - $w2) * (1 - $w2) + [math]::Pow($w * $A / $q, 2); $den = (1 - $w2) * (1 - $w2) + [math]::Pow($w / ($A * $q), 2)
+            return 10 * [math]::Log10($num / $den)
+        }
+    }
+}
+
+function Solve-LinearSystem {
+    # Gaussian elimination with partial pivoting: returns x for M x = b.
+    param([double[,]]$M, [double[]]$b)
+    $n = $b.Length
+    $a = New-Object 'double[,]' $n, ($n + 1)
+    for ($i = 0; $i -lt $n; $i++) { for ($j = 0; $j -lt $n; $j++) { $a[$i, $j] = $M[$i, $j] }; $a[$i, $n] = $b[$i] }
+    for ($col = 0; $col -lt $n; $col++) {
+        $piv = $col; for ($r = $col + 1; $r -lt $n; $r++) { if ([math]::Abs($a[$r, $col]) -gt [math]::Abs($a[$piv, $col])) { $piv = $r } }
+        if ($piv -ne $col) { for ($j = 0; $j -le $n; $j++) { $t = $a[$col, $j]; $a[$col, $j] = $a[$piv, $j]; $a[$piv, $j] = $t } }
+        $d = $a[$col, $col]; if ([math]::Abs($d) -lt 1e-12) { continue }
+        for ($r = 0; $r -lt $n; $r++) {
+            if ($r -eq $col) { continue }
+            $fct = $a[$r, $col] / $d
+            if ($fct -ne 0) { for ($j = $col; $j -le $n; $j++) { $a[$r, $j] -= $fct * $a[$col, $j] } }
+        }
+    }
+    return [double[]]@(for ($i = 0; $i -lt $n; $i++) { if ([math]::Abs($a[$i, $i]) -lt 1e-12) { 0.0 } else { $a[$i, $n] / $a[$i, $i] } })
+}
+
 function ConvertFrom-CurveJson {
     # Thetis ucParametricEq JSON -> canonical curve
     param([string]$json)
@@ -305,13 +357,26 @@ function New-Canon {
         vox          = [ordered]@{ enabled = $null; hangMs = $null }
         # txEq.mode: 'legacy' = 10-band graphic (legacy[] authoritative)
         #            'parametric' = curve authoritative (any number of points)
-        txEq         = [ordered]@{ enabled = $null; preampDb = $null; mode = $null; legacy = $null; curve = $null }
+        txEq         = [ordered]@{ enabled = $null; preampDb = $null; outputDb = $null; mode = $null; legacy = $null; curve = $null }
         # cfc.legacy: 10 x @{freqHz; compDb; postDb}; compCurve/postCurve: canonical curves
         cfc          = [ordered]@{ enabled = $null; postEqEnabled = $null; mode = $null; preCompDb = $null; prePeqDb = $null; postEqGainDb = $null; legacy = $null; compCurve = $null; postCurve = $null }
         phaseRotator = [ordered]@{ enabled = $null; cornerHz = $null; stages = $null; reverse = $null }
         compressor   = [ordered]@{ enabled = $null; thresholdDb = $null; ratio = $null; attackMs = $null; releaseMs = $null; kneeDb = $null; makeupDb = $null }
         noiseGate    = [ordered]@{ enabled = $null; thresholdDb = $null; attackMs = $null; holdMs = $null; releaseMs = $null; rangeDb = $null; outputDb = $null }
         rxEq         = $null   # @{ enabled; masterGainDb; points=@(@{freqHz;gainDb;q}) }
+        # Single-chain processing units (read from Zeus native units; written to AetherTX).
+        # $null = source has no such unit. See lib/Zeus.ps1 Zeus_Read for the field lists.
+        inputStrip   = $null
+        deEsser      = $null
+        agc          = $null
+        multiband    = $null
+        saturation   = $null
+        exciter      = $null
+        bassEnhancer = $null
+        reverb       = $null
+        limiter      = $null
+        otherUnitsOn = @()
+        chainOrder   = $null
         # extraEq: a correction curve to CASCADE on top of the destination's EQ
         # (summed in dB) - used for single-EQ destinations (Aether) where a
         # retired upstream EQ (VMP G6) must be folded into the one EQ stage.
@@ -394,6 +459,12 @@ function Invoke-SdrRules {
         }
         if ($r.Contains('set') -and $r.set) {
             foreach ($k in $r.set.Keys) { Set-HtPath $canon $k (Copy-Deep $r.set[$k]) }
+        }
+        if ($r.Contains('destSet') -and $r.destSet) {
+            # Raw destination fields (e.g. Aether 'comp.driveDb', 'finalLimiter.outputTrimDb',
+            # or a NereusSDR key name), written as-is after the conversion.
+            if (-not $canon.Contains('destSet') -or $null -eq $canon.destSet) { $canon.destSet = [ordered]@{} }
+            foreach ($k in $r.destSet.Keys) { $canon.destSet[$k] = Copy-Deep $r.destSet[$k] }
         }
         $applied += $r.id
     }

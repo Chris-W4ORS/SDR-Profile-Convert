@@ -109,7 +109,7 @@ function Aether_Read {
     if ($p.eq) {
         $e = ConvertFrom-AetherEq $p.eq $c.txEq $c 'TX'
         $c.txEq.enabled = $e.enabled; $c.txEq.preampDb = [math]::Round($e.gainDb, 2); $c.txEq.mode = 'parametric'
-        $c.txEq.curve = [ordered]@{ parametric = $true; globalGainDb = 0.0; useQ = $true; points = $e.points; freqMinHz = $null; freqMaxHz = $null }
+        $c.txEq.curve = [ordered]@{ parametric = $true; globalGainDb = 0.0; useQ = $true; qModel = 'rbj'; points = $e.points; freqMinHz = $null; freqMaxHz = $null }
     }
     if ($p.comp) {
         foreach ($k in @('thresholdDb', 'ratio', 'attackMs', 'releaseMs', 'kneeDb', 'makeupDb')) { $c.compressor[$k] = ConvertTo-Num $p.comp[$k] }
@@ -142,22 +142,195 @@ function Set-AetherPeakBands {
     }
 }
 
+function ConvertTo-AetherBandType {
+    # Canonical band type -> Aether eq.bands[].type. Anything unknown becomes Peak.
+    param([string]$t)
+    switch ($t) { 'LowShelf' { return 'LowShelf' } 'HighShelf' { return 'HighShelf' } default { return 'Peak' } }
+}
+
 function Set-AetherBandsExact {
     # Write a short parametric curve (<= 16 points, e.g. Zeus's 10 bands) 1:1 into
-    # Aether's first N EQ slots - each band keeps its own frequency, gain and Q.
-    # Slots after N inside activeBandCount are switched off.
+    # Aether's first N EQ slots - each band keeps its own frequency, gain, Q and type
+    # (Peak / LowShelf / HighShelf). Slots after N inside activeBandCount are switched off.
     param($eq, $points)
-    $s = Get-SortedCurve $points
-    $n = $s.x.Count
+    $sp = @($points | Where-Object { $null -ne $_ -and $null -ne (ConvertTo-Num $_.freqHz) } | Sort-Object { [double]$_.freqHz })
+    $n = $sp.Count
     $list = New-Object System.Collections.ArrayList; foreach ($b in @($eq.bands)) { [void]$list.Add($b) }
     while ($list.Count -lt $n) { [void]$list.Add((Copy-Deep $list[0])) }
     for ($i = 0; $i -lt $n; $i++) {
-        $b = $list[$i]; $b.type = 'Peak'; $b.enabled = $true
-        $b.freqHz = [math]::Round($s.x[$i], 1); $b.gainDb = [math]::Round($s.y[$i], 2); $b.q = [math]::Round((Clamp $s.q[$i] 0.1 20), 3)
+        $b = $list[$i]; $b.type = ConvertTo-AetherBandType $sp[$i].type; $b.enabled = $true
+        $b.freqHz = [math]::Round([double]$sp[$i].freqHz, 1); $b.gainDb = [math]::Round([double](ConvertTo-Num $sp[$i].gainDb 0), 2)
+        $b.q = [math]::Round((Clamp ([double](ConvertTo-Num $sp[$i].q 1)) 0.1 20), 3)
     }
-    $active = [math]::Max([int](ConvertTo-Num $eq.activeBandCount $n), $n)
-    for ($i = $n; $i -lt [math]::Min($active, $list.Count); $i++) { $list[$i].enabled = $false }
-    $eq.bands = $list.ToArray(); $eq.activeBandCount = $active
+    # Active count = exactly N, every later slot switched off, so extra bands
+    # (input-strip cuts, multiband gains) can be appended after them.
+    for ($i = $n; $i -lt $list.Count; $i++) { $list[$i].enabled = $false }
+    $eq.bands = $list.ToArray(); $eq.activeBandCount = $n
+}
+
+$script:AeMaxBands = 16
+
+function Add-AetherEqGainDb {
+    param($eq, [double]$db)
+    $cur = 20 * [math]::Log10([math]::Max(1e-6, [double](ConvertTo-Num $eq.masterGain 1.0)))
+    $eq.masterGain = [math]::Round([math]::Pow(10, ($cur + $db) / 20), 4)
+}
+
+function Add-AetherEqBand {
+    # Append one band after the active ones (Aether holds up to 16).
+    param($eq, $canon, [string]$type, [double]$freqHz, [double]$gainDb, [double]$q, [int]$slope, [string]$label)
+    $list = New-Object System.Collections.ArrayList; foreach ($b in @($eq.bands)) { [void]$list.Add($b) }
+    $i = [int](ConvertTo-Num $eq.activeBandCount $list.Count)
+    if ($i -ge $script:AeMaxBands) { Add-Note $canon "no free Aether EQ slot for $label ($type $([math]::Round($freqHz)) Hz) - skipped."; return }
+    while ($list.Count -le $i) { [void]$list.Add((Copy-Deep $list[0])) }
+    $b = $list[$i]; $b.type = $type; $b.enabled = $true; $b.freqHz = [math]::Round($freqHz, 1); $b.gainDb = [math]::Round($gainDb, 2)
+    $b.q = [math]::Round((Clamp $q 0.1 20), 3); $b.slopeDbPerOct = $slope
+    $eq.bands = $list.ToArray(); $eq.activeBandCount = $i + 1
+    $slopeTxt = if ($type -match 'Pass') { " $slope dB/oct" } else { " $([math]::Round($gainDb,1)) dB Q $([math]::Round($q,2))" }
+    Write-Log "    + EQ band $($i + 1): $label -> $type $([math]::Round($freqHz)) Hz$slopeTxt" DarkGray
+}
+
+function Set-AetherSingleChainUnits {
+    # Zeus native units -> AetherTX stages. Every partial mapping leaves a note.
+    param($p, $canon, $rules)
+    $eq = $p.eq
+    $needEq = { if (-not $eq.enabled) { foreach ($b in @($eq.bands)) { $b.gainDb = 0 }; $eq.masterGain = 1.0; $eq.enabled = $true; Write-Log "    EQ was off at the source - enabled flat to carry input-strip / multiband settings" DarkGray } }
+
+    # --- chain order: Zeus order mapped onto Aether's stage names ---
+    if ($canon.chainOrder) {
+        $map = @{ 'noise-gate' = 'Gate'; 'de-esser' = 'DeEss'; 'eq' = 'Eq'; 'compressor' = 'Comp'; 'saturation' = 'Tube'; 'exciter' = 'Enh'; 'bass' = 'Enh'; 'reverb' = 'Reverb' }
+        $order = New-Object System.Collections.ArrayList
+        foreach ($u in $canon.chainOrder) { $s = $map[$u]; if ($s -and -not $order.Contains($s)) { [void]$order.Add($s) } }
+        foreach ($s in @($p.chain)) { if (-not $order.Contains($s)) { [void]$order.Add($s) } }
+        $p.chain = @($order)
+        Write-Log "    chain: $($p.chain -join ' > ')" DarkGray
+    }
+    $before = { param([string]$stage) $ci = [array]::IndexOf(@($p.chain), $stage); $ei = [array]::IndexOf(@($p.chain), 'Eq'); return ($ci -ge 0 -and $ei -ge 0 -and $ci -lt $ei) }
+
+    # --- input strip: trim -> EQ gain; low/high cut -> HighPass/LowPass bands ---
+    $trim = 0.0
+    $is = $canon.inputStrip
+    if ($is -and $is.enabled) {
+        $trim = [double](ConvertTo-Num $is.trimDb 0)
+        if ($trim -ne 0) { & $needEq; Add-AetherEqGainDb $eq $trim; Write-Log "    input trim $trim dB -> Aether EQ gain" DarkGray }
+        if ([double](ConvertTo-Num $is.hpfSlopeDb 0) -gt 0 -and $is.hpfHz) { & $needEq; Add-AetherEqBand $eq $canon 'HighPass' ([double]$is.hpfHz) 0 0.707 ([int]$is.hpfSlopeDb) 'input low cut' }
+        if ($is.lpfHz -and [double]$is.lpfHz -lt 20000) {
+            & $needEq; Add-AetherEqBand $eq $canon 'LowPass' ([double]$is.lpfHz) 0 0.707 12 'input high cut'
+            Add-Note $canon "input high cut $($is.lpfHz) Hz written at 12 dB/oct (Zeus has no slope setting for it) - compare the roll-off by eye." 'DarkGray'
+        }
+        if ($is.invert) { Add-Note $canon 'input polarity INVERT is on in Zeus - Aether has no polarity switch.' }
+        if ([int](ConvertTo-Num $is.rotatorStages 0) -gt 0 -and [int](ConvertTo-Num $p.comp.phaseRotatorStages 0) -eq 0) {
+            $p.comp.phaseRotatorStages = [int][math]::Min(6, [int]$is.rotatorStages)
+            Add-Note $canon "input-strip phase rotator ($($is.rotatorStages) stages @ $($is.rotatorHz) Hz) -> comp.phaseRotatorStages $($p.comp.phaseRotatorStages); corner not settable." 'DarkGray'
+        }
+    }
+    # Gate / de-esser placed before the EQ in Aether no longer see the Zeus trim: shift thresholds to match.
+    $trimComp = ($trim -ne 0) -and [bool](Get-SdrOption $rules 'Aether' 'compensateTrim' $true)
+
+    # --- noise gate threshold compensation (gate itself mapped above) ---
+    if ($trimComp -and (& $before 'Gate') -and $null -ne $canon.noiseGate.thresholdDb) {
+        $p.gate.thresholdDb = [math]::Round([double]$canon.noiseGate.thresholdDb - $trim, 2)
+        Write-Log "    gate threshold $($canon.noiseGate.thresholdDb) - trim $trim -> $($p.gate.thresholdDb) dB (gate sits before the EQ gain)" DarkGray
+    }
+
+    # --- de-esser ---
+    $d = $canon.deEsser
+    if ($d) {
+        $p.deess.enabled = [bool]$d.enabled
+        if ($null -ne $d.frequencyHz) { $p.deess.frequencyHz = [double]$d.frequencyHz }
+        if ($null -ne $d.thresholdDb) {
+            $t = [double]$d.thresholdDb; if ($trimComp -and (& $before 'DeEss')) { $t -= $trim }
+            $p.deess.thresholdDb = [math]::Round($t, 2)
+        }
+        if ($null -ne $d.rangeDb) { $p.deess.amountDb = 0 - [math]::Abs([double]$d.rangeDb) }
+        if ($null -ne $d.attackMs) { $p.deess.attackMs = [double]$d.attackMs }
+        if ($null -ne $d.releaseMs) { $p.deess.releaseMs = [double]$d.releaseMs }
+        if ($d.enabled) {
+            Add-Note $canon "de-esser ratio $([math]::Round([double](ConvertTo-Num $d.ratio 0),1)):1 not carried - Aether's de-esser cuts up to amountDb ($($p.deess.amountDb) dB) with no ratio." 'DarkGray'
+            if ($d.wide) { Add-Note $canon 'de-esser is in WIDE (full-band) mode in Zeus - Aether de-esses the sibilance band only.' }
+        }
+    }
+
+    # --- multiband: static band makeup gains -> EQ (dynamics are lost) ---
+    $mb = $canon.multiband
+    if ($mb -and $mb.enabled -and [bool](Get-SdrOption $rules 'Aether' 'multibandToEq' $true)) {
+        $x = @($mb.crossoversHz | ForEach-Object { [double]$_ }); $g = @($mb.bands | ForEach-Object { if ($_.bypass) { 0.0 } else { [double](ConvertTo-Num $_.makeupDb 0) } })
+        if ($x.Count -eq 3 -and $g.Count -eq 4) {
+            if ($g[0] -ne 0) { & $needEq; Add-AetherEqBand $eq $canon 'LowShelf' $x[0] $g[0] 0.707 12 'MB low makeup' }
+            for ($k = 1; $k -le 2; $k++) { if ($g[$k] -ne 0) { $f0 = [math]::Sqrt($x[$k - 1] * $x[$k]); & $needEq; Add-AetherEqBand $eq $canon 'Peak' $f0 $g[$k] ($f0 / ($x[$k] - $x[$k - 1])) 12 "MB band $($k + 1) makeup" } }
+            if ($g[3] -ne 0) { & $needEq; Add-AetherEqBand $eq $canon 'HighShelf' $x[2] $g[3] 0.707 12 'MB air makeup' }
+        }
+        $out = [double](ConvertTo-Num $mb.outputDb 0)
+        if ($out -ne 0) {
+            if ($p.comp.enabled) { $p.comp.makeupDb = [math]::Round([double](ConvertTo-Num $p.comp.makeupDb 0) + $out, 2); Write-Log "    MB output $out dB -> comp makeup ($($p.comp.makeupDb) dB)" DarkGray }
+            else { Add-AetherEqGainDb $eq $out; Write-Log "    MB output $out dB -> EQ gain (comp off)" DarkGray }
+        }
+        Add-Note $canon "4-band multiband: only the per-band makeup gains were carried (as EQ, ahead of the compressor). Its compression (thr $($mb.bands[0].thresholdDb) dB, $($mb.bands[0].ratio):1) and $($mb.driveDb) dB drive have no Aether equivalent."
+    }
+
+    # --- saturation -> Tube ---
+    $s = $canon.saturation
+    if ($s) {
+        $p.tube.enabled = [bool]$s.enabled
+        if ($null -ne $s.driveDb) { $p.tube.driveDb = [double]$s.driveDb }
+        if ($null -ne $s.mixPercent) { $p.tube.dryWet = [math]::Round([double]$s.mixPercent / 100, 3) }
+        if ($null -ne $s.outputDb) { $p.tube.outputGainDb = [double]$s.outputDb }
+        if ($s.enabled) { Add-Note $canon "saturation -> Tube: drive/mix/output carried; bias $($s.biasPercent)% and tone $($s.toneHz) Hz not mapped (different models)." 'DarkGray' }
+    }
+
+    # --- exciter + bass enhancer -> Pudu (Aphex-style: 'doo' = highs, 'poo' = lows) ---
+    $ex = $canon.exciter; $bs = $canon.bassEnhancer
+    if ($ex -or $bs) {
+        $exOn = [bool]($ex -and $ex.enabled); $bsOn = [bool]($bs -and $bs.enabled)
+        $p.pudu.enabled = ($exOn -or $bsOn)
+        if ($exOn) {
+            if ($null -ne $ex.frequencyHz) { $p.pudu.dooTuneHz = [double]$ex.frequencyHz }
+            if ($null -ne $ex.driveDb) { $p.pudu.dooHarmonicsDb = [double]$ex.driveDb }
+            if ($null -ne $ex.mixPercent) { $p.pudu.dooMix = [math]::Round([double]$ex.mixPercent / 100, 3) }
+        } else { $p.pudu.dooMix = 0 }
+        if ($bsOn) {
+            if ($null -ne $bs.frequencyHz) { $p.pudu.pooTuneHz = [double]$bs.frequencyHz }
+            if ($null -ne $bs.mixPercent) { $p.pudu.pooMix = [math]::Round([double]$bs.mixPercent / 100, 3) }
+            $scale = [double](Get-SdrOption $rules 'Aether' 'bassAmountToDriveDb' 12)
+            if ($null -ne $bs.amountPercent) { $p.pudu.pooDriveDb = [math]::Round([double]$bs.amountPercent / 100 * $scale, 1) }
+            Add-Note $canon "bass enhancer -> Aether Enh 'poo' (low) section: $($bs.frequencyHz) Hz, mix $($bs.mixPercent)%, amount $($bs.amountPercent)% -> drive $($p.pudu.pooDriveDb) dB (approximate scale; tune by ear)." 'DarkGray'
+        } else { $p.pudu.pooMix = 0 }
+        foreach ($u in @(@{ n = 'exciter'; o = $ex; on = $exOn }, @{ n = 'bass enhancer'; o = $bs; on = $bsOn })) {
+            if ($u.on) { $net = [double](ConvertTo-Num $u.o.inputDb 0) + [double](ConvertTo-Num $u.o.outputDb 0); if ([math]::Abs($net) -ge 1) { Add-Note $canon "$($u.n) in/out gain nets $net dB in Zeus - not carried." 'DarkGray' } }
+        }
+    }
+
+    # --- reverb ---
+    $r = $canon.reverb
+    if ($r) {
+        $p.reverb.enabled = [bool]$r.enabled
+        if ($null -ne $r.sizePercent) { $p.reverb.size = [math]::Round([double]$r.sizePercent / 100, 3) }
+        if ($null -ne $r.dampPercent) { $p.reverb.damping = [math]::Round([double]$r.dampPercent / 100, 3) }
+        if ($null -ne $r.mixPercent) { $p.reverb.mix = [math]::Round([double]$r.mixPercent / 100, 3) }
+        if ($null -ne $r.preDelayMs) { $p.reverb.preDelayMs = [double]$r.preDelayMs }
+        if ($r.enabled) { Add-Note $canon "reverb decay $($r.decayPercent)% not mapped (Aether uses seconds) - set decay by ear." 'DarkGray' }
+    }
+
+    # --- brickwall limiter -> Final Output limiter ---
+    $l = $canon.limiter
+    if ($l) {
+        $p.finalLimiter.enabled = [bool]$l.enabled
+        if ($null -ne $l.ceilingDb) { $p.finalLimiter.ceilingDb = [double]$l.ceilingDb }
+        if ($l.enabled) {
+            $drive = [double](ConvertTo-Num $l.inputDb 0)
+            if ($drive -ne 0) {
+                if ((Get-SdrOption $rules 'Aether' 'limiterDrive' 'none') -eq 'compMakeup' -and $p.comp.enabled) {
+                    $p.comp.makeupDb = [math]::Round([double](ConvertTo-Num $p.comp.makeupDb 0) + $drive, 2)
+                    Add-Note $canon "limiter drive $drive dB added to comp makeup ($($p.comp.makeupDb) dB) so the final limiter is driven like Zeus's (option limiterDrive=compMakeup)."
+                } else { Add-Note $canon "limiter drive $drive dB NOT carried - Aether's final limiter has no input gain, so it will barely limit. Set options.Aether.limiterDrive = 'compMakeup' in the rules file to push it via comp makeup." }
+            }
+            Add-Note $canon "limiter look-ahead $($l.lookaheadMs) ms, release $($l.releaseMs) ms$(if ($l.autoRelease) {' (auto)'}), true-peak $(if ($l.truePeak) {'on'} else {'off'}) - Aether's final limiter only has a ceiling." 'DarkGray'
+        }
+    }
+
+    # --- units with no Aether stage at all ---
+    if ($canon.agc -and $canon.agc.enabled) { Add-Note $canon "broadcast AGC (target $($canon.agc.targetDb) dB, up to +$($canon.agc.maxGainDb) / -$($canon.agc.maxCutDb) dB) has no Aether equivalent - the Aether copy won't ride gain, so levels into the compressor will differ." }
+    foreach ($u in @($canon.otherUnitsOn)) { Add-Note $canon "Zeus '$u' unit is on - no Aether equivalent." }
 }
 
 function ConvertTo-AetherTx {
@@ -184,7 +357,13 @@ function ConvertTo-AetherTx {
         if ($useQ -and $pts.Count -ge 2 -and $pts.Count -le 16 -and -not ($e.curve.interp)) { Set-AetherBandsExact $p.eq $pts }
         else { Set-AetherPeakBands $p.eq $pts $method $useQ }
         if ($null -ne $e.enabled) { $p.eq.enabled = [bool]$e.enabled }
-        if ($null -ne $e.preampDb) { $p.eq.masterGain = [math]::Round([math]::Pow(10, $e.preampDb / 20), 4) }
+        # Zeus has EQ input AND output gain; Aether has one master gain. The EQ is linear,
+        # so the two are summed in dB.
+        if ($null -ne $e.preampDb -or $null -ne $e.outputDb) {
+            $gDb = [double](ConvertTo-Num $e.preampDb 0) + [double](ConvertTo-Num $e.outputDb 0)
+            $p.eq.masterGain = [math]::Round([math]::Pow(10, $gDb / 20), 4)
+            if ($e.outputDb) { Write-Log "    EQ gain: input $([double](ConvertTo-Num $e.preampDb 0)) dB + output $($e.outputDb) dB -> Aether master $([math]::Round($gDb,2)) dB" DarkGray }
+        }
     }
     if ($canon.extraEq) {
         # Cascade (sum in dB) a correction curve onto whatever was just set -
@@ -198,6 +377,9 @@ function ConvertTo-AetherTx {
     }
     $cp = $canon.compressor
     if ($null -ne $cp.enabled) { $p.comp.enabled = [bool]$cp.enabled }
+    # Zeus/Thetis/NereusSDR compressors have no drive control: don't inherit the template's.
+    $origin2 = if ($canon.source.origin) { $canon.source.origin } else { $canon.source.app }
+    if ($origin2 -ne 'Aether' -and $p.comp.Contains('driveDb')) { $p.comp.driveDb = 0 }
     foreach ($k in @('thresholdDb', 'ratio', 'attackMs', 'releaseMs', 'kneeDb', 'makeupDb')) { if ($null -ne $cp[$k]) { $p.comp[$k] = [double]$cp[$k] } }
     if ($cp.enabled -and $cp.extra) {
         if ($cp.extra.Contains('auto-makeup') -and [double]$cp.extra['auto-makeup'] -ge 1) { Add-Note $canon "source compressor has Auto Makeup ON - Aether has no auto makeup; only the fixed makeup ($($cp.makeupDb) dB) is set." 'Yellow' }
@@ -213,6 +395,16 @@ function ConvertTo-AetherTx {
     if ($null -ne $g.enabled) { $p.gate.enabled = [bool]$g.enabled }
     foreach ($k in @('thresholdDb', 'holdMs', 'releaseMs')) { if ($null -ne $g[$k]) { $p.gate[$k] = [double]$g[$k] } }
     if ($null -ne $g.attackMs -and $g.enabled) { Add-Note $canon "gate attack $($g.attackMs) ms dropped - Aether's TX gate has no attack parameter." 'DarkGray' }
+    if ($g.extra) {
+        if ($g.extra.Contains('ratio')) { $p.gate.ratio = [double]$g.extra['ratio'] }
+        if ($g.extra.Contains('lookahead-ms')) { $p.gate.lookaheadMs = [double]$g.extra['lookahead-ms'] }
+        if ($g.extra.Contains('mode') -and [int]$g.extra['mode'] -eq 1) { $p.gate.mode = 'Expander' }
+    }
+    if ($null -ne $g.rangeDb) { $p.gate.floorDb = [double]$g.rangeDb }
+    if ($canon.chainOrder -or $canon.inputStrip -or $canon.limiter) { Set-AetherSingleChainUnits $p $canon $rules }
+    if ($canon.destSet) {
+        foreach ($k in $canon.destSet.Keys) { Set-HtPath $p $k $canon.destSet[$k]; Write-Log "    rules destSet: $k = $($canon.destSet[$k])" DarkGray }
+    }
     $p.createdBy = 'SdrConvert'; $p.createdAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     return $p
 }

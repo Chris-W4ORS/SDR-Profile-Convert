@@ -6,7 +6,11 @@
       "cfcLegacyMethod": "spline",
       "mapPhaseRotator": true,
       "writeRx": true,
-      "note": "txEqSource auto = CFC post-EQ curve when the source is Thetis/NereusSDR (validated 2026-08-11), the TX EQ (band-for-band, with Q) when the source is Zeus/Aether. Force with cfcPost or txEq."
+      "compensateTrim": true,
+      "multibandToEq": true,
+      "limiterDrive": "none",
+      "bassAmountToDriveDb": 12,
+      "note": "compensateTrim: Zeus input-strip trim goes into the Aether EQ gain, so gate/de-esser thresholds placed before the EQ are lowered by the trim. multibandToEq: Zeus multiband per-band makeup gains become EQ shelves/peaks (compression itself is not carried). limiterDrive: none | compMakeup (adds the Zeus limiter drive to the Aether comp makeup so the final limiter is driven). bassAmountToDriveDb: Zeus bass amount 100% = this many dB of Aether poo drive. txEqSource auto = CFC post-EQ curve when the source is Thetis/NereusSDR (validated 2026-08-11), the TX EQ (band-for-band, with Q) when the source is Zeus/Aether. Force with cfcPost or txEq."
     },
     "Zeus": {
       "cfcLegacyMethod": "spline",
@@ -17,6 +21,9 @@
       "note": "Natural spline kept for legacy 10-band CFC (validated); 18-band paths always use PCHIP. resetUnmappedParams: for these units, every parameter the converter doesn't map is set to its Zeus default instead of inheriting leftover live state (add eq to include the EQ unit)."
     },
     "Nereus": {
+      "fitConventionalEq": true,
+      "inputCuts": "eq",
+      "gateToDexp": true,
       "mirrorActiveToLive": true,
       "writeDspGlobals": true,
       "zeroPostEqWhenDisabled": false,
