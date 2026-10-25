@@ -1,0 +1,10 @@
+# Your personal rules (the repo ships SdrConvert.rules.example.json)
+SdrConvert.rules.json
+# Archives and backups that may hold your settings
+*.zip
+*.bak_*
+*.rejected_*
+# Logs / outputs if someone runs the scripts inside the repo folder
+Logs/
+Backups/
+Canonical/
