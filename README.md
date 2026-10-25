@@ -1,103 +1,42 @@
-# SDR-Profile-Convert
+## SDR-Profile-Convert v1.0.0
 
-PowerShell toolkit that converts TX audio profiles between **Thetis**, **NereusSDR**, **Zeus** and **AetherSDR**, with backups, previews and validation before every write.
+First public release. A PowerShell toolkit for moving TX audio profiles between **Thetis**, **NereusSDR**, **Zeus** and **AetherSDR**: pick a source app and profile, pick a destination, and it converts, with a backup before every write.
 
-Pick a source app and profile, pick a destination app and name. Any of the four apps, plus a neutral JSON format, can be the source or the destination.
+### What's included
+- **Convert-SdrProfile.ps1**: converts profiles from any of the four apps (or a neutral JSON format) to any other. Interactive menus or unattended switches; `-WhatIf` to preview, `-Review` to approve each change.
+- **Probe-SdrStores.ps1**: read-only check of each app's file formats and API. Run it after updating any app; it reports DRIFT if something changed.
+- **Reset-SdrProfiles.ps1**: backs up, then clears Thetis / NereusSDR / AetherSDR down to one kept profile.
+- **Reset-ZeusProfiles.ps1**: exports every Zeus profile, then removes all but the ones you keep.
+- **Repair-ThetisDb.ps1**: recovers a Thetis database that Thetis moved to `DB\broken\`.
+- **SdrConvert.rules.example.json**: optional per-destination overrides (all off by default).
 
-> Not affiliated with Thetis, NereusSDR, Zeus or AetherSDR. These scripts edit other applications' settings. Read the Safety section, keep the backups, and use at your own risk (see [LICENSE](LICENSE)).
+### Safety
+- Destination files are backed up before every write; reset scripts only preview unless you add `-Apply`.
+- Thetis writes are type-checked against its own database schema and load-tested before saving.
+- Zeus is restored to its previously active profile after every run; values are range-checked and read back.
+- Every run logs the before/after state of each profile to `Documents\SdrConvert\Logs\`.
 
-## Supported versions
-
-| App | Tested with | Profiles are stored in |
-|---|---|---|
-| Thetis | 2.10.3.x (Hermes-Lite 2) | `%APPDATA%\OpenHPSDR\Thetis-x64\DB\<id>\database.xml` |
-| NereusSDR | 2026.10.x (settings schema v10) | `%LOCALAPPDATA%\NereusSDR\NereusSDR.settings` |
-| Zeus | current release (local REST API) | live engine snapshots, via its API |
-| AetherSDR | 26.9.4+ (AetherTX / AetherRX windows) | `AetherTxProfiles.json` / `AetherRxProfiles.json` |
-
-Requirements:
-- Windows 10/11 with PowerShell 7 (`pwsh`).
-- Each app must have connected to your radio at least once.
-- Developed and tested on a Hermes-Lite 2 only. Other radios may work but are untested.
-
-## Install
-
-1. Download or clone the repo, e.g. to `C:\Scripts\SDR-Profile-Convert`.
-2. Downloaded files are blocked by Windows, so unblock them once:
-   ```powershell
-   Get-ChildItem C:\Scripts\SDR-Profile-Convert -Recurse -File | Unblock-File
-   ```
-3. Optional: copy `SdrConvert.rules.example.json` to `SdrConvert.rules.json` and switch on the rules you want. With no rules file, profiles are converted as-is.
-
-## Quick start
-
-```powershell
-# 1. After installing or updating any app: check that the file formats and API are still what the scripts expect (read-only)
-.\Probe-SdrStores.ps1
-
-# 2. Convert interactively (pick apps and profiles from menus)
-.\Convert-SdrProfile.ps1
-
-# 3. Or unattended, e.g. three Zeus profiles into NereusSDR
-.\Convert-SdrProfile.ps1 -From Zeus -FromProfile "Profile A","Profile B","Profile C" -To Nereus -Yes -NoActive
-```
-
-Before converting:
-- **Close the destination app** (Thetis, NereusSDR, AetherSDR). They rewrite their settings when they exit.
-- **Keep Zeus running** when it is the source or destination, since it is driven over its local API. Don't transmit while it runs: each profile is applied live for a moment.
-
-## Scripts
-
-| Script | Purpose |
+### Tested with
+| App | Version |
 |---|---|
-| `Convert-SdrProfile.ps1` | The converter. `-WhatIf` previews; `-Review` lets you approve each change. |
-| `Probe-SdrStores.ps1` | Read-only inventory of every app's storage and API; prints DRIFT when something changed. |
-| `Reset-SdrProfiles.ps1` | Backs up, then removes every Thetis / NereusSDR / AetherSDR profile except one kept "seed". Previews unless `-Apply`. |
-| `Reset-ZeusProfiles.ps1` | Exports every Zeus profile (API + on-disk copy), then removes all but the ones you keep. Previews unless `-Apply`. |
-| `Repair-ThetisDb.ps1` | Fixes a `database.xml` that Thetis moved to `DB\broken\`, proves it loads, and with `-Restore` puts it back. |
+| Thetis | 2.10.3.x |
+| NereusSDR | 2026.10.x (settings schema v10) |
+| Zeus | current release (local REST API) |
+| AetherSDR | 26.9.4+ |
 
-### Converter switches
+Windows 10/11, PowerShell 7, Hermes-Lite 2. Other radios are untested.
 
-| Switch | Effect |
-|---|---|
-| `-From` / `-To` | `Thetis`, `Nereus`, `Zeus`, `Aether`, `File` |
-| `-FromProfile` / `-ToProfile` | Source names; optional new destination names, one per source |
-| `-All` | Every source profile |
-| `-CloneFrom <name>` | Thetis/NereusSDR: the existing profile new ones are cloned from (default: the active one) |
-| `-SetActive <name>` / `-NoActive` | Set, or leave alone, the destination's active profile |
-| `-WhatIf` / `-Review` / `-Yes` | Preview only / approve each change / no final prompt |
-| `-NoRules` | Straight mapping, no overrides |
+### Known limitations
+- **Zeus's compressor and noise gate** have no equivalent in Thetis or NereusSDR, so they aren't carried over.
+- **AetherSDR** has no CFC stage, and its phase rotator is capped at 6 stages.
+- **Thetis's legacy EQ and CFC sliders** are whole-dB, so values are rounded to within ±0.5 dB.
+- **Thetis writes are experimental.** Keep the backups.
 
-## Safety
+Every gap is listed in each run's notes.
 
-Nothing is changed without a backup, and destructive scripts only preview unless you add `-Apply`.
-- **Backups.** Every edited file gets a `.bak_<timestamp>` copy beside it. Reset scripts save everything to `Documents\SdrConvert\Backups\` with a `RESTORE.txt`.
-- **Thetis load test.** Writes match the database's own column types and are loaded with .NET `DataSet.ReadXml`, the way Thetis loads them. If the result wouldn't load, it isn't saved.
-- **Zeus checks.** The previously active profile is restored after every run. Values are clamped to Zeus's ranges and read back after writing.
-- **Audit trail.** Each run writes a log and the before/after JSON of every profile to `Documents\SdrConvert\Logs\`.
+### Getting started
+1. Download **SDR-Profile-Convert.zip** below and extract it, e.g. to `C:\Scripts\SDR-Profile-Convert`.
+2. Unblock the files: `Get-ChildItem C:\Scripts\SDR-Profile-Convert -Recurse -File | Unblock-File`
+3. Run `.\Probe-SdrStores.ps1`, then `.\Convert-SdrProfile.ps1`.
 
-## What doesn't carry over
-
-Each gap is listed in the run's notes.
-- **Zeus compressor and noise gate → Thetis / NereusSDR:** those apps have no equivalent stage, so the copies sound less compressed.
-- **CFC (multiband compression) → AetherSDR:** Aether has no CFC stage.
-- **Phase rotator → AetherSDR:** limited to 6 stages, with a fixed corner frequency.
-- **Thetis legacy EQ and CFC sliders:** whole-dB only, so values are rounded to within ±0.5 dB. The parametric EQ curve keeps its decimals.
-- **Non-audio fields** (mic input settings and the like): new Thetis/NereusSDR profiles inherit these from the clone seed.
-
-## Rules
-
-`SdrConvert.rules.json` (copied from the example) holds destination-specific overrides, matched by:
-- destination app
-- source app
-- profile-name wildcard
-
-For example: force the same ALC/leveler/mic gain on every Zeus profile, add a compressor when converting from Thetis to Aether, or replace or cascade an EQ curve on matching profiles. Every rule in the example file ships disabled.
-
-## Updates to the apps
-
-The formats these apps use change between releases. Run `Probe-SdrStores.ps1` after updating any of them. If it reports DRIFT, open an issue and attach the probe folder (`probe.json` and `samples\`).
-
-## License
-
-MIT, see [LICENSE](LICENSE).
+See the [README](https://github.com/Chris-W4ORS/SDR-Profile-Convert#readme) for full usage. Not affiliated with any of the four applications.
