@@ -83,7 +83,9 @@ The apps don't define EQ bands the same way, so curves are converted by **respon
 - **Point count and Q** (`options.Nereus` / `options.Thetis`):
   - `fitPoints`: `auto` (default) places as many points as the passband needs, 19 for 80–3000 Hz and 21 for 80–4000 Hz. A number, such as `10` or `18` to match the NereusSDR/Thetis band presets, writes exactly that many points, log-spaced across the TX filter.
   - `fitQ`: `auto` (default) makes each point as wide as the gap to its neighbours, so Q runs from about 15–20 at the bottom to about 1 at the top. That is what lets narrow low-end cuts fit closely. A number, such as `1.1`, puts that Q on every point: a tidier panel that is easier to edit by hand, at the cost of a larger fit error on curves with deep cuts below 300 Hz (about 2.5 dB on a typical 3 kHz voice curve, versus 0.2 dB with `auto`).
-  - The run log shows the point count, Q range and fit error for each profile, so you can compare settings with `-WhatIf`.
+  - `eqGain`: what happens to the source's EQ gain (Zeus EQ input + output + input trim, or AetherSDR's EQ gain). `keep` (default) writes it into the curve preamp. `zero` writes 0 dB. A number caps it, e.g. `3`. AetherSDR profiles often run +12 dB of EQ gain into their own compressor and limiter. In WDSP the same preamp drives the leveler, CFC and ALC, so `zero` or a low cap is usually right for AetherSDR sources.
+  - AetherSDR has no TX filter, so for an AetherSDR source the fit range comes from its High-Pass and Low-Pass EQ bands (for example 76–3200 Hz). The destination's TX filter is left as it is.
+  - The run log shows the point count, Q range, EQ gain and fit error for each profile, so you can compare settings with `-WhatIf`.
 
 ## Zeus TX Audio Suite → AetherTX
 
@@ -107,9 +109,9 @@ For Thetis/NereusSDR, the Zeus noise gate maps to DEXP (threshold trim-compensat
 ## Safety
 
 Nothing is changed without a backup, and destructive scripts only preview unless you add `-Apply`.
-- **Backups.** Every edited file gets a `.bak_<timestamp>` copy beside it. Reset scripts save everything to `Documents\SdrConvert\Backups\` with a `RESTORE.txt`.
+- **Backups.** Every edited file gets a `.bak_<timestamp>` copy beside it. Before the converter writes anything to Zeus, it exports **every** Zeus profile (raw API JSON, a canonical copy you can restore with the converter, and a copy of Zeus's data folder) to `Documents\SdrConvert\Backups\Zeus_<timestamp>\`. If any profile can't be exported, nothing is written. Reset scripts also save everything to `Documents\SdrConvert\Backups\`. Each backup folder has a `RESTORE.txt`.
 - **Thetis load test.** Writes match the database's own column types and are loaded with .NET `DataSet.ReadXml`, the way Thetis loads them. If the result wouldn't load, it isn't saved.
-- **Zeus checks.** The previously active profile is restored after every run. Values are clamped to Zeus's ranges and read back after writing.
+- **Zeus checks.** The previously active profile is restored after every run, including when that profile was itself overwritten. Values are clamped to Zeus's ranges and read back after writing.
 - **Audit trail.** Each run writes a log and the before/after JSON of every profile to `Documents\SdrConvert\Logs\`.
 
 ## What doesn't carry over

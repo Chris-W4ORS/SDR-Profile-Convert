@@ -98,7 +98,10 @@ function ConvertFrom-AetherEq {
     $other = @($eq.bands | Where-Object { $_.enabled -and $_.type -ne 'Peak' })
     if ($other.Count) { Add-Note $canon "$side EQ has $($other.Count) enabled non-Peak band(s) ($((@($other | ForEach-Object { $_.type }) | Select-Object -Unique) -join ',')) - not representable, dropped." }
     $mg = ConvertTo-Num $eq.masterGain 1.0; if ($mg -le 0) { $mg = 1.0 }
-    return @{ points = $pts; enabled = [bool]$eq.enabled; gainDb = 20 * [math]::Log10($mg) }
+    # High-Pass / Low-Pass bands set the voice bandwidth in AetherSDR (it has no TX filter of its own).
+    $hp = @($other | Where-Object { $_.type -eq 'HighPass' } | ForEach-Object { [double]$_.freqHz } | Sort-Object -Descending | Select-Object -First 1)
+    $lp = @($other | Where-Object { $_.type -eq 'LowPass' } | ForEach-Object { [double]$_.freqHz } | Sort-Object | Select-Object -First 1)
+    return @{ points = $pts; enabled = [bool]$eq.enabled; gainDb = 20 * [math]::Log10($mg); hpHz = $(if ($hp) { $hp[0] }); lpHz = $(if ($lp) { $lp[0] }) }
 }
 
 function Aether_Read {
@@ -110,6 +113,8 @@ function Aether_Read {
         $e = ConvertFrom-AetherEq $p.eq $c.txEq $c 'TX'
         $c.txEq.enabled = $e.enabled; $c.txEq.preampDb = [math]::Round($e.gainDb, 2); $c.txEq.mode = 'parametric'
         $c.txEq.curve = [ordered]@{ parametric = $true; globalGainDb = 0.0; useQ = $true; qModel = 'rbj'; points = $e.points; freqMinHz = $null; freqMaxHz = $null }
+        # Used as the EQ fit range for Thetis/NereusSDR (not written as a TX filter).
+        if ($e.hpHz -or $e.lpHz) { $c.txEq.bandLimitHz = [ordered]@{ lowHz = $e.hpHz; highHz = $e.lpHz } }
     }
     if ($p.comp) {
         foreach ($k in @('thresholdDb', 'ratio', 'attackMs', 'releaseMs', 'kneeDb', 'makeupDb')) { $c.compressor[$k] = ConvertTo-Num $p.comp[$k] }

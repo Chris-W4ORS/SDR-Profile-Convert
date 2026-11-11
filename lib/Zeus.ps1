@@ -278,7 +278,75 @@ function Push-ZeusLive {
     Invoke-Zeus Put "$P/api/tx-audio-suite/processing-mode" @{ mode = 'native' } | Out-Null
 }
 
-function Zeus_BeginWrite { Write-Log "  Zeus: each profile is pushed LIVE then snapshotted. Do not transmit while this runs." Yellow }
+function Backup-ZeusProfiles {
+    # Exports every Zeus profile before anything in Zeus is changed:
+    #   api\<name>.json        raw profile JSON as Zeus returns it
+    #   canonical\<name>.canon.json   re-creatable with the converter (-From File -To Zeus)
+    #   disk\...               copy of the folder(s) where Zeus keeps its profile data
+    # Each profile is applied live for a moment to read it (Zeus has no read-only
+    # endpoint); the original active profile is re-applied by Zeus_Close.
+    # Throws if any profile could not be exported, so nothing is overwritten unprotected.
+    $names = @($script:Ze.Ids.Keys | Sort-Object)
+    $bk = Join-Path $env:USERPROFILE "Documents\SdrConvert\Backups\Zeus_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $apiDir = Join-Path $bk 'api'; $canDir = Join-Path $bk 'canonical'; $diskDir = Join-Path $bk 'disk'
+    New-Item -ItemType Directory -Path $apiDir, $canDir -Force | Out-Null
+    $safe = { param($n) $n -replace '[\\/:*?"<>|]', '_' }
+    Write-Log "  Backing up all $($names.Count) Zeus profiles first (each applied live briefly - don't transmit)..." Cyan
+    $bad = @()
+    foreach ($n in $names) {
+        try {
+            $canon = Zeus_Read $n
+            ($script:Ze.LastRaw | ConvertTo-Json -Depth 30) | Set-Content (Join-Path $apiDir ((& $safe $n) + '.json')) -Encoding UTF8
+            Write-JsonFile $canon (Join-Path $canDir ((& $safe $n) + '.canon.json'))
+        } catch { $bad += $n; Write-Log "    [FAIL] $n : $($_.Exception.Message)" Red }
+    }
+    # Copy of Zeus's on-disk store: folders under AppData/ProgramData (or the install
+    # folder) holding a file that mentions a profile name or id.
+    $copied = 0
+    if ($names.Count) {
+        $needles = @($names[0], $script:Ze.Ids[$names[0]]) | Where-Object { $_ }
+        $roots = @($env:APPDATA, $env:LOCALAPPDATA, $env:ProgramData) | Where-Object { $_ -and (Test-Path $_) }
+        $cand = @()
+        foreach ($r in $roots) { $cand += @(Get-ChildItem $r -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Zeus|StationEngine' } | ForEach-Object { $_.FullName }) }
+        foreach ($pn in 'ZeusProduct', 'StationEngine') { $pp = Get-Process $pn -ErrorAction SilentlyContinue | Select-Object -First 1; if ($pp -and $pp.Path) { $cand += (Split-Path $pp.Path) } }
+        $latin1 = [Text.Encoding]::GetEncoding(28591)
+        $hitDirs = New-Object System.Collections.Generic.HashSet[string]
+        foreach ($d in ($cand | Select-Object -Unique)) {
+            foreach ($f in @(Get-ChildItem $d -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -lt 50MB -and $_.Extension -match '^\.(json|db|sqlite|sqlite3|xml|dat|settings|config|bin|ldb|log)?$' })) {
+                try { $txt = $latin1.GetString([IO.File]::ReadAllBytes($f.FullName)) } catch { continue }
+                foreach ($nd in $needles) { if ($txt.Contains($nd)) { [void]$hitDirs.Add($f.DirectoryName); break } }
+            }
+        }
+        foreach ($h in $hitDirs) {
+            $dst = Join-Path $diskDir (($h -replace '^[A-Za-z]:\\', '') -replace '[\\/:]', '_')
+            New-Item -ItemType Directory -Path $dst -Force | Out-Null
+            Copy-Item -Path (Join-Path $h '*') -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
+            "$h" | Set-Content (Join-Path $dst '_ORIGINAL_PATH.txt'); $copied++
+        }
+    }
+    @(
+        "Zeus backup $(Get-Date)  -  $($names.Count) profiles, made by Convert-SdrProfile.ps1 before writing to Zeus",
+        "",
+        "Per-profile restore (Zeus running):",
+        "  1. copy the wanted canonical\<name>.canon.json files to Documents\SdrConvert\Canonical\",
+        "  2. .\Convert-SdrProfile.ps1 -From File -FromProfile ""<name>"" -To Zeus -NoRules -Yes",
+        "     (-NoRules matters: without it the Zeus rules would change ALC/leveler/mic gain)",
+        "",
+        "EXACT restore (everything): close Zeus, copy each folder in disk\ back to the path in its _ORIGINAL_PATH.txt, start Zeus.",
+        "",
+        "api\ holds the raw JSON Zeus returned for each profile (reference).",
+        "Profiles: $($names -join ', ')"
+    ) | Set-Content (Join-Path $bk 'RESTORE.txt') -Encoding UTF8
+    if ($bad.Count) { throw "Zeus backup incomplete ($($bad.Count) of $($names.Count) failed: $($bad -join ', ')) - nothing written to Zeus. Partial backup: $bk" }
+    Write-Log ("  Zeus backup: {0} profiles{1} -> {2}" -f $names.Count, $(if ($copied) { " + $copied data folder(s)" } else { '' }), $bk) Green
+    $script:Ze.BackupDir = $bk
+    return $bk
+}
+
+function Zeus_BeginWrite {
+    $null = Backup-ZeusProfiles
+    Write-Log "  Zeus: each profile is pushed LIVE then snapshotted. Do not transmit while this runs." Yellow
+}
 
 function Zeus_Write {
     param($canon, [string]$DestName, $rules, [switch]$Review)
@@ -289,9 +357,15 @@ function Zeus_Write {
     $script:Ze.LiveTouched = $true
     Push-ZeusLive $live
     $isNew = -not $script:Ze.Ids.Contains($DestName)
-    if (-not $isNew) { try { Invoke-Zeus Delete "$($script:Ze.Prod)/api/tx-audio-profiles/$($script:Ze.Ids[$DestName])" $null | Out-Null } catch { Write-Log "  [WARN] delete before re-snapshot failed: $($_.Exception.Message)" Yellow } }
+    $oldId = if ($isNew) { $null } else { $script:Ze.Ids[$DestName] }
+    if (-not $isNew) {
+        Write-Log "    replacing the existing Zeus profile '$DestName' (backed up in $($script:Ze.BackupDir))" DarkGray
+        try { Invoke-Zeus Delete "$($script:Ze.Prod)/api/tx-audio-profiles/$oldId" $null | Out-Null } catch { Write-Log "  [WARN] delete before re-snapshot failed: $($_.Exception.Message)" Yellow }
+    }
     $r = Invoke-Zeus Post "$($script:Ze.Prod)/api/tx-audio-profiles" @{ name = $DestName }
     $script:Ze.Ids[$DestName] = $r.id; $script:Ze.Written[$DestName] = $live
+    # The profile that was active got a new id: point the end-of-run restore at it.
+    if ($oldId -and $oldId -eq $script:Ze.RestoreId) { $script:Ze.RestoreId = $r.id }
     return @{ Changed = 1; Total = 1; New = $isNew }
 }
 

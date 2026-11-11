@@ -24,12 +24,13 @@
       "fitConventionalEq": true,
       "fitPoints": "auto",
       "fitQ": "auto",
+      "eqGain": "keep",
       "inputCuts": "eq",
       "gateToDexp": true,
       "mirrorActiveToLive": true,
       "writeDspGlobals": true,
       "zeroPostEqWhenDisabled": false,
-      "note": "fitPoints: auto (19 points for 80-3000 Hz, 21 for 80-4000 Hz) or a number such as 10 or 18 to match the NereusSDR band presets. fitQ: auto (narrow points at the bottom, about Q 1 at the top; most accurate) or one Q for every point, e.g. 1.1 (tidier panel, larger fit error on deep low-end cuts). zeroPostEqWhenDisabled reproduces the old Sync script's belt-and-braces zeroing; NereusSDR 2026.10 honours CFCPostEqEnabled per profile so it is off by default."
+      "note": "fitPoints: auto (19 points for 80-3000 Hz, 21 for 80-4000 Hz) or a number such as 10 or 18 to match the NereusSDR band presets. fitQ: auto (narrow points at the bottom, about Q 1 at the top; most accurate) or one Q for every point, e.g. 1.1 (tidier panel, larger fit error on deep low-end cuts). eqGain: keep (source EQ gain goes into the curve preamp), zero (0 dB) or a number to cap it - AetherSDR sources often carry +12 dB, which drives WDSP much harder. zeroPostEqWhenDisabled reproduces the old Sync script's belt-and-braces zeroing; NereusSDR 2026.10 honours CFCPostEqEnabled per profile so it is off by default."
     }
   },
   "rules": [

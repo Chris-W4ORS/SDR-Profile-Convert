@@ -190,7 +190,14 @@ function ConvertTo-WdspFittedCanon {
     $c2.filter = $flt
 
     # Fit range = the TX filter passband: WDSP only shapes between its first and last point.
-    $fLo = [math]::Max(50.0, [double](ConvertTo-Num $flt.lowHz 80)); $fHi = [math]::Min(8000.0, [double](ConvertTo-Num $flt.highHz 4000))
+    # A source without a TX filter (AetherSDR) uses its High-Pass / Low-Pass EQ bands instead.
+    $bl = $canon.txEq.bandLimitHz
+    $loSrc = if ($null -ne (ConvertTo-Num $flt.lowHz)) { $flt.lowHz } elseif ($bl -and $null -ne (ConvertTo-Num $bl.lowHz)) { $bl.lowHz } else { 80 }
+    $hiSrc = if ($null -ne (ConvertTo-Num $flt.highHz)) { $flt.highHz } elseif ($bl -and $null -ne (ConvertTo-Num $bl.highHz)) { $bl.highHz } else { 4000 }
+    if ($null -eq (ConvertTo-Num $flt.lowHz) -and $null -eq (ConvertTo-Num $flt.highHz) -and $bl) {
+        Write-Log ("    EQ fit range from the source's High-Pass/Low-Pass bands: {0}-{1} Hz (the {2} TX filter is left as it is)" -f [math]::Round([double]$loSrc), [math]::Round([double]$hiSrc), $app) DarkGray
+    }
+    $fLo = [math]::Max(50.0, [double](ConvertTo-Num $loSrc 80)); $fHi = [math]::Min(8000.0, [double](ConvertTo-Num $hiSrc 4000))
     if ($fHi -le $fLo + 200) { $fHi = $fLo + 3000 }
     # Point count (option fitPoints): 'auto' = as many as the passband needs (19 for
     # 80-3000 Hz, 21 for 80-4000 Hz); a number (e.g. 10 or 18, the NereusSDR/Thetis
@@ -247,6 +254,17 @@ function ConvertTo-WdspFittedCanon {
     $e = $canon.txEq
     $trim = if ($is -and $is.enabled) { [double](ConvertTo-Num $is.trimDb 0) } else { 0.0 }
     $total = [double](ConvertTo-Num $e.preampDb 0) + [double](ConvertTo-Num $e.outputDb 0) + $trim
+    # eqGain option: 'keep' carries the source's EQ gain into the curve preamp; 'zero' writes
+    # 0 dB; a number caps it. Gain staging differs between apps: AetherSDR's EQ gain feeds
+    # its own compressor/limiter, while in WDSP the preamp drives the leveler, CFC and ALC.
+    $egOpt = Get-SdrOption $rules $app 'eqGain' 'keep'; $srcTotal = $total; $egCap = 0.0
+    if ("$egOpt" -eq 'zero') { $total = 0.0 }
+    elseif ($egOpt -is [ValueType] -and $egOpt -isnot [bool]) { $total = [math]::Min($total, [double]$egOpt) }
+    elseif ("$egOpt" -ne 'keep') {
+        if ([double]::TryParse("$egOpt", [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$egCap)) { $total = [math]::Min($total, $egCap) }
+        else { Add-Note $canon "option $app.eqGain '$egOpt' is not 'keep', 'zero' or a number - using keep." }
+    }
+    if ($total -ne $srcTotal) { Write-Log ("    EQ gain: {0:+0.0;-0.0;0.0} dB at the source -> {1:+0.0;-0.0;0.0} dB written (option {2}.eqGain = {3})" -f $srcTotal, $total, $app, $egOpt) DarkGray }
     $e2 = [ordered]@{}; foreach ($k in $e.Keys) { $e2[$k] = $e[$k] }
     $e2.enabled = $true; $e2.mode = 'parametric'
     $e2.preampDb = [math]::Round((Clamp $total -12 15), 0)
