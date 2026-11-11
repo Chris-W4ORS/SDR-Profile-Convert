@@ -22,12 +22,14 @@
     },
     "Nereus": {
       "fitConventionalEq": true,
+      "fitPoints": "auto",
+      "fitQ": "auto",
       "inputCuts": "eq",
       "gateToDexp": true,
       "mirrorActiveToLive": true,
       "writeDspGlobals": true,
       "zeroPostEqWhenDisabled": false,
-      "note": "zeroPostEqWhenDisabled reproduces the old Sync script's belt-and-braces zeroing; NereusSDR 2026.10 honours CFCPostEqEnabled per profile so it is off by default."
+      "note": "fitPoints: auto (19 points for 80-3000 Hz, 21 for 80-4000 Hz) or a number such as 10 or 18 to match the NereusSDR band presets. fitQ: auto (narrow points at the bottom, about Q 1 at the top; most accurate) or one Q for every point, e.g. 1.1 (tidier panel, larger fit error on deep low-end cuts). zeroPostEqWhenDisabled reproduces the old Sync script's belt-and-braces zeroing; NereusSDR 2026.10 honours CFCPostEqEnabled per profile so it is off by default."
     }
   },
   "rules": [

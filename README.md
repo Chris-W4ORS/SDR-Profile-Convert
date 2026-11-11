@@ -80,6 +80,10 @@ The apps don't define EQ bands the same way, so curves are converted by **respon
 - **Thetis and NereusSDR** (WDSP `eq_impulse_q`) use a different model: each point is a Gaussian bump on a linear Hz axis, 1000 Hz / Q wide at half height, with no shelf or pass types, acting only between the first and last point. A Q 1.1 band is about 900 Hz wide at any frequency, so a curve copied 1:1 can be several dB off.
 - **Zeus/Aether → Thetis/NereusSDR:** the converter computes the source's real response (EQ bands with shelves, the Zeus multiband makeup tone, input-strip cuts) and least-squares fits about 20 WDSP points across the TX filter passband. The run log prints the fit error (typically under 1 dB). The total EQ gain goes into the parametric preamp (`global_gain_db`), which is what WDSP uses in parametric mode; `TXEQPreamp` only feeds the legacy EQ.
 - Options (`options.Nereus` / `options.Thetis`): `fitConventionalEq` (true), `inputCuts` (`eq` | `filter` | `none`), `gateToDexp` (true).
+- **Point count and Q** (`options.Nereus` / `options.Thetis`):
+  - `fitPoints`: `auto` (default) places as many points as the passband needs, 19 for 80–3000 Hz and 21 for 80–4000 Hz. A number, such as `10` or `18` to match the NereusSDR/Thetis band presets, writes exactly that many points, log-spaced across the TX filter.
+  - `fitQ`: `auto` (default) makes each point as wide as the gap to its neighbours, so Q runs from about 15–20 at the bottom to about 1 at the top. That is what lets narrow low-end cuts fit closely. A number, such as `1.1`, puts that Q on every point: a tidier panel that is easier to edit by hand, at the cost of a larger fit error on curves with deep cuts below 300 Hz (about 2.5 dB on a typical 3 kHz voice curve, versus 0.2 dB with `auto`).
+  - The run log shows the point count, Q range and fit error for each profile, so you can compare settings with `-WhatIf`.
 
 ## Zeus TX Audio Suite → AetherTX
 

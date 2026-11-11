@@ -192,16 +192,39 @@ function ConvertTo-WdspFittedCanon {
     # Fit range = the TX filter passband: WDSP only shapes between its first and last point.
     $fLo = [math]::Max(50.0, [double](ConvertTo-Num $flt.lowHz 80)); $fHi = [math]::Min(8000.0, [double](ConvertTo-Num $flt.highHz 4000))
     if ($fHi -le $fLo + 200) { $fHi = $fLo + 3000 }
-    # Points: >= 35 Hz apart at the bottom (Q tops out at 20 = 50 Hz wide), ~20% apart above.
-    $ctr = New-Object System.Collections.ArrayList; $f = $fLo
-    while ($f -lt $fHi - 1) { [void]$ctr.Add($f); $f = $f + [math]::Max(35.0, 0.2 * $f) }
-    if (($fHi - $ctr[$ctr.Count - 1]) -lt 0.5 * [math]::Max(35.0, 0.2 * $fHi)) { $ctr.RemoveAt($ctr.Count - 1) }
-    [void]$ctr.Add($fHi)
+    # Point count (option fitPoints): 'auto' = as many as the passband needs (19 for
+    # 80-3000 Hz, 21 for 80-4000 Hz); a number (e.g. 10 or 18, the NereusSDR/Thetis
+    # band presets) = exactly that many points, log-spaced across the passband.
+    $fpOpt = Get-SdrOption $rules $app 'fitPoints' 'auto'; $nFix = 0
+    if ("$fpOpt" -match '^\s*\d+\s*$') { $nFix = [int]"$fpOpt" }
+    elseif ("$fpOpt" -ne 'auto') { Add-Note $canon "option $app.fitPoints '$fpOpt' is not 'auto' or a number - using auto." }
+    if ($nFix -ne 0 -and ($nFix -lt 3 -or $nFix -gt 64)) { Add-Note $canon "option $app.fitPoints $nFix is outside 3-64 - clamped."; $nFix = [int](Clamp $nFix 3 64) }
+    # Point Q (option fitQ): 'auto' = each point as wide as the gap to its neighbours
+    # (narrow at the bottom, about Q 1 at the top - the accurate fit); a number = that Q
+    # on every point (tidier panel, larger fit error on curves with deep low-end cuts).
+    $fqOpt = Get-SdrOption $rules $app 'fitQ' 'auto'; $qFix = 0.0
+    if ($fqOpt -is [ValueType]) { $qFix = [double]$fqOpt }
+    elseif ("$fqOpt" -ne 'auto' -and -not [double]::TryParse("$fqOpt", [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$qFix)) {
+        Add-Note $canon "option $app.fitQ '$fqOpt' is not 'auto' or a number - using auto."; $qFix = 0.0 }
+    if ($qFix -ne 0 -and ($qFix -lt 0.2 -or $qFix -gt 20)) { Add-Note $canon "option $app.fitQ $qFix is outside 0.2-20 - clamped."; $qFix = Clamp $qFix 0.2 20 }
+
+    $ctr = New-Object System.Collections.ArrayList
+    if ($nFix -gt 0) {
+        for ($j = 0; $j -lt $nFix; $j++) { [void]$ctr.Add([math]::Round($fLo * [math]::Pow($fHi / $fLo, $j / ($nFix - 1)), 0)) }
+    } else {
+        # Points: >= 35 Hz apart at the bottom (Q tops out at 20 = 50 Hz wide), ~20% apart above.
+        $f = $fLo
+        while ($f -lt $fHi - 1) { [void]$ctr.Add($f); $f = $f + [math]::Max(35.0, 0.2 * $f) }
+        if (($fHi - $ctr[$ctr.Count - 1]) -lt 0.5 * [math]::Max(35.0, 0.2 * $fHi)) { $ctr.RemoveAt($ctr.Count - 1) }
+        [void]$ctr.Add($fHi)
+    }
     $n = $ctr.Count
     $qs = [double[]]@(for ($j = 0; $j -lt $n; $j++) {
+        if ($qFix -gt 0) { [math]::Round($qFix, 2); continue }
         $lo = if ($j -gt 0) { $ctr[$j] - $ctr[$j - 1] } else { $ctr[1] - $ctr[0] }
         $hi = if ($j -lt $n - 1) { $ctr[$j + 1] - $ctr[$j] } else { $lo }
         [math]::Round((Clamp (1000.0 / (1.6 * 0.5 * ($lo + $hi))) 0.2 20), 2) })
+    $qMin = ($qs | Measure-Object -Minimum).Minimum; $qMax = ($qs | Measure-Object -Maximum).Maximum
     # Dense log grid inside the passband
     $m = 240; $grid = [double[]]@(for ($i = 0; $i -lt $m; $i++) { $fLo * [math]::Pow($fHi / $fLo, $i / ($m - 1)) })
     $tgt = Get-ConventionalEqTargetDb $canon $grid ($mode -eq 'eq')
@@ -234,7 +257,8 @@ function ConvertTo-WdspFittedCanon {
     $lt = Get-ConventionalEqTargetDb $canon $lf ($mode -eq 'eq')
     $e2.legacy = @(for ($i = 0; $i -lt 10; $i++) { [ordered]@{ freqHz = $lf[$i]; gainDb = [math]::Round((Clamp $lt[$i] -12 15), 0) } })
     $c2.txEq = $e2
-    Write-Log ("    EQ: conventional curve fitted to {0} {1} points, {2}-{3} Hz; fit error max {4:0.0} dB / rms {5:0.00} dB; EQ gain {6:+0.0;-0.0} dB in the curve preamp" -f $n, $app, $fLo, $fHi, $maxErr, $rms, $e2.curve.globalGainDb) DarkGray
+    $qTxt = if ($qMin -eq $qMax) { "Q {0:0.##}" -f $qMin } else { "Q {0:0.##}-{1:0.##}" -f $qMin, $qMax }
+    Write-Log ("    EQ: conventional curve fitted to {0} {1} points ({7}), {2}-{3} Hz; fit error max {4:0.0} dB / rms {5:0.00} dB; EQ gain {6:+0.0;-0.0} dB in the curve preamp" -f $n, $app, $fLo, $fHi, $maxErr, $rms, $e2.curve.globalGainDb, $qTxt) DarkGray
     if ($maxErr -gt 1.5) { Add-Note $canon ("$app EQ fit is off by up to {0:0.0} dB somewhere in {1}-{2} Hz - check the TX EQ panel against the source." -f $maxErr, $fLo, $fHi) }
     if ([math]::Abs($total) -gt 15) { Add-Note $canon "total EQ gain $total dB is beyond the legacy preamp range; parametric preamp carries it." 'DarkGray' }
 
