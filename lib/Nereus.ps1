@@ -94,8 +94,11 @@ function Nereus_Read {
     $canon = New-Canon $Name 'Nereus'
     $pre = $script:Nr.ProfRoot + $Name + '/'
     $txRoot = "hardware/$($script:Nr.Mac)/tx/"
-    # Per-profile first; fall back to the tx-level live key (older builds kept DEXP there)
-    $get = { param($k) $v = Get-NereusVal ($pre + $k); if ($null -eq $v) { $v = Get-NereusVal ($txRoot + $k) }; $v }.GetNewClosure()
+    # Per-profile first; fall back to the tx-level live key (older builds kept DEXP there).
+    # GetNewClosure() runs the block in its own module scope, where script functions
+    # aren't visible - so capture Get-NereusVal as a variable (it keeps its own scope).
+    $nv  = ${function:Get-NereusVal}
+    $get = { param($k) $v = & $nv ($pre + $k); if ($null -eq $v) { $v = & $nv ($txRoot + $k) }; $v }.GetNewClosure()
     Read-TfCanon $canon $get 'n'
     return $canon
 }

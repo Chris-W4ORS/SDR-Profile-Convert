@@ -55,7 +55,7 @@ Before converting:
 |---|---|
 | `Convert-SdrProfile.ps1` | The converter. `-WhatIf` previews; `-Review` lets you approve each change. |
 | `Probe-SdrStores.ps1` | Read-only inventory of every app's storage and API; prints DRIFT when something changed. |
-| `Export-ProfileReference.ps1` | Read-only snapshot of NereusSDR, Thetis and AetherTX profiles (`-Match "Chris*"` by name): a readable `Reference.md` plus the raw settings of each profile. Close Thetis and NereusSDR first so their latest saves are on disk. |
+| `Export-ProfileReference.ps1` | Read-only snapshot of NereusSDR, Thetis and AetherTX profiles (all profiles, or `-Match "My*"` to filter by name): a readable `Reference.md` plus the raw settings of each profile. Close Thetis and NereusSDR first so their latest saves are on disk. |
 | `Reset-SdrProfiles.ps1` | Backs up, then removes every Thetis / NereusSDR / AetherSDR profile except one kept "seed". Previews unless `-Apply`. |
 | `Reset-ZeusProfiles.ps1` | Exports every Zeus profile (API + on-disk copy), then removes all but the ones you keep. Previews unless `-Apply`. |
 | `Repair-ThetisDb.ps1` | Fixes a `database.xml` that Thetis moved to `DB\broken\`, proves it loads, and with `-Restore` puts it back. |

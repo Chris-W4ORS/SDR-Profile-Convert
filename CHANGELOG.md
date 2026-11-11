@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.1 - 2026-11-11
+
+### Fixed
+- Converting **from** NereusSDR or Thetis failed with "Get-NereusVal / Get-ThetisTag is not recognized" when `Convert-SdrProfile.ps1` was run from a PowerShell prompt (it worked from `Run-SdrConvert.bat`).
+- `Export-ProfileReference.ps1` now exports every profile by default. It used to default to `-Match "Chris*"`, so for other users it found no profiles.
+
 ## v1.1.0 - 2026-10-25
 
 ### Added

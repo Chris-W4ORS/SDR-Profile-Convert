@@ -8,11 +8,11 @@
   Changes nothing in either app; safe to run with both apps open.
 .EXAMPLE
   .\Export-ProfileReference.ps1
-  .\Export-ProfileReference.ps1 -Match "Chris 3k*"
+  .\Export-ProfileReference.ps1 -Match "My Profile*"
 #>
 [CmdletBinding()]
 param(
-    [string]$Match = 'Chris*',
+    [string]$Match = '*',
     [string]$OutDir = (Join-Path $PSScriptRoot ("Reference_" + (Get-Date -Format 'yyyyMMdd_HHmmss')))
 )
 $ErrorActionPreference = 'Stop'

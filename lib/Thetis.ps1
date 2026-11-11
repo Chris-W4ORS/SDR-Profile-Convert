@@ -89,7 +89,9 @@ function Thetis_Read {
     $blk = $script:Th.Profiles[$Name]
     if (-not $blk) { throw "Thetis profile '$Name' not found" }
     $canon = New-Canon $Name 'Thetis'
-    $get = { param($tag) Get-ThetisTag $blk $tag }.GetNewClosure()
+    # GetNewClosure() can't see script-scope functions when run from a prompt - capture it (same fix as Nereus.ps1)
+    $gt  = ${function:Get-ThetisTag}
+    $get = { param($tag) & $gt $blk $tag }.GetNewClosure()
     Read-TfCanon $canon $get 't'
     return $canon
 }
