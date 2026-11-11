@@ -291,6 +291,23 @@ function ConvertTo-WdspFittedCanon {
     return $c2
 }
 
+function Show-TfEqPreview {
+    # -WhatIf: build each profile's Thetis/NereusSDR settings (nothing is written) so the
+    # EQ fit line - point count, Q range, fit error - and its notes show in the preview.
+    param($jobs, [string]$app, $rules)
+    $col = if ($app -eq 'Thetis') { 't' } else { 'n' }
+    $label = if ($app -eq 'Nereus') { 'NereusSDR' } else { $app }
+    Write-Log ""; Write-Log "  $label TX EQ preview (nothing written):" Cyan
+    foreach ($j in $jobs) {
+        Write-Log "  $($j.Dst)" White
+        $e = $j.Canon.txEq
+        $fits = $e.curve -and $e.curve.qModel -eq 'rbj' -and [bool](Get-SdrOption $rules $app 'fitConventionalEq' $true)
+        try { $null = Get-TfWrites $j.Canon $col $rules $app }
+        catch { Write-Log "    EQ preview failed: $($_.Exception.Message)" Red; continue }
+        if (-not $fits) { Write-Log ("    EQ: copied as-is ({0} points, no fit needed)" -f @(Get-TxEqPoints $j.Canon).Count) DarkGray }
+    }
+}
+
 function Get-TfWrites {
     param($canon, [string]$nameCol, $rules, [string]$app)
     $w = New-Object System.Collections.ArrayList

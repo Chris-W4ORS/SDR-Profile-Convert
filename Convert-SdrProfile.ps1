@@ -146,7 +146,10 @@ try {
     }
     if ($jobs.Count -eq 0) { throw "Nothing could be read." }
 
-    if ($WhatIf) { Write-Log ""; Write-Log "-WhatIf: nothing written. Canonical before/after JSON is in $script:RunDir" Yellow; return }
+    if ($WhatIf) {
+        if ($To -in @('Thetis', 'Nereus')) { Show-TfEqPreview $jobs $To $rules }
+        Write-Log ""; Write-Log "-WhatIf: nothing written. Canonical before/after JSON is in $script:RunDir" Yellow; return
+    }
     if (-not $Yes -and -not (Confirm-Yes "`nWrite $($jobs.Count) profile(s) to $($labels[$To])?")) { Write-Log "Cancelled." Yellow; return }
 
     # ---- write --------------------------------------------------------------------

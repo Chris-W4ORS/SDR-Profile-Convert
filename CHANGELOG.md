@@ -5,6 +5,7 @@
 ### Added
 - **`fitPoints` and `fitQ` options** for Zeus/AetherSDR → Thetis/NereusSDR EQ fits (`options.Nereus` / `options.Thetis`). `fitPoints` sets how many points are written, for example `10` or `18` to match the NereusSDR band presets, instead of the 19–21 points the fit chose on its own. `fitQ` puts one Q on every point instead of a Q that narrows toward the low end. Both default to `auto`, which gives the same result as v1.1.1.
 - The fit line in the run log now shows the Q range alongside the point count and fit error.
+- `-WhatIf` to Thetis or NereusSDR now previews the TX EQ: the fit line (point count, Q range, fit error) for converted curves, or that the EQ is copied as-is. Before, `-WhatIf` stopped before the EQ was built, so there was no way to check a fit without writing.
 
 ## v1.1.1 - 2026-11-11
 
