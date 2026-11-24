@@ -150,7 +150,7 @@ function Set-AetherPeakBands {
 function ConvertTo-AetherBandType {
     # Canonical band type -> Aether eq.bands[].type. Anything unknown becomes Peak.
     param([string]$t)
-    switch ($t) { 'LowShelf' { return 'LowShelf' } 'HighShelf' { return 'HighShelf' } default { return 'Peak' } }
+    switch ($t) { 'LowShelf' { return 'LowShelf' } 'HighShelf' { return 'HighShelf' } 'HighPass' { return 'HighPass' } 'LowPass' { return 'LowPass' } default { return 'Peak' } }
 }
 
 function Set-AetherBandsExact {
@@ -166,6 +166,7 @@ function Set-AetherBandsExact {
         $b = $list[$i]; $b.type = ConvertTo-AetherBandType $sp[$i].type; $b.enabled = $true
         $b.freqHz = [math]::Round([double]$sp[$i].freqHz, 1); $b.gainDb = [math]::Round([double](ConvertTo-Num $sp[$i].gainDb 0), 2)
         $b.q = [math]::Round((Clamp ([double](ConvertTo-Num $sp[$i].q 1)) 0.1 20), 3)
+        if ($b.type -match 'Pass') { $b.gainDb = 0; $b.slopeDbPerOct = 12 }   # Lyra high/low-pass: 12 dB/oct with Q
     }
     # Active count = exactly N, every later slot switched off, so extra bands
     # (input-strip cuts, multiband gains) can be appended after them.

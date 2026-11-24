@@ -1,10 +1,10 @@
 # SDR-Profile-Convert
 
-PowerShell toolkit that converts TX audio profiles between **Thetis**, **NereusSDR**, **Zeus** and **AetherSDR**, with backups, previews and validation before every write.
+PowerShell toolkit that converts TX audio profiles between **Thetis**, **NereusSDR**, **Zeus**, **AetherSDR** and **Lyra**, with backups, previews and validation before every write.
 
-Pick a source app and profile, pick a destination app and name. Any of the four apps, plus a neutral JSON format, can be the source or the destination.
+Pick a source app and profile, pick a destination app and name. Any of the five apps, plus a neutral JSON format, can be the source or the destination.
 
-> Not affiliated with Thetis, NereusSDR, Zeus or AetherSDR. These scripts edit other applications' settings. Read the Safety section, keep the backups, and use at your own risk (see [LICENSE](LICENSE)). Release history: [CHANGELOG](CHANGELOG.md).
+> Not affiliated with Thetis, NereusSDR, Zeus, AetherSDR or Lyra. These scripts edit other applications' settings. Read the Safety section, keep the backups, and use at your own risk (see [LICENSE](LICENSE)). Release history: [CHANGELOG](CHANGELOG.md).
 
 ## Supported versions
 
@@ -14,6 +14,7 @@ Pick a source app and profile, pick a destination app and name. Any of the four 
 | NereusSDR | 2026.10.x (settings schema v10) | `%LOCALAPPDATA%\NereusSDR\NereusSDR.settings` |
 | Zeus | current release (local REST API) | live engine snapshots, via its API |
 | AetherSDR | 26.9.4 - 26.10.3 (AetherTX / AetherRX windows) | `AetherTxProfiles.json` / `AetherRxProfiles.json` |
+| Lyra | Lyra-SDR-cpp, profile schema v7 (Nov 2026) | registry `HKCU\Software\N8SDR\Lyra-cpp\profiles` |
 
 Requirements:
 - Windows 10/11 with PowerShell 7 (`pwsh`).
@@ -46,7 +47,7 @@ Requirements:
 ```
 
 Before converting:
-- **Close the destination app** (Thetis, NereusSDR and nereusd, AetherSDR). They rewrite their settings when they exit.
+- **Close the destination app** (Thetis, NereusSDR and nereusd, AetherSDR, Lyra). They rewrite their settings when they exit. If Lyra or AetherSDR is running, the converter writes an import file instead.
 - **Keep Zeus running** when it is the source or destination, since it is driven over its local API. Don't transmit while it runs: each profile is applied live for a moment.
 
 ## Scripts
@@ -64,10 +65,12 @@ Before converting:
 
 | Switch | Effect |
 |---|---|
-| `-From` / `-To` | `Thetis`, `Nereus`, `Zeus`, `Aether`, `File` |
+| `-From` / `-To` | `Thetis`, `Nereus`, `Zeus`, `Aether`, `Lyra`, `File` |
 | `-FromProfile` / `-ToProfile` | Source names; optional new destination names, one per source |
 | `-All` | Every source profile |
-| `-CloneFrom <name>` | Thetis/NereusSDR: the existing profile new ones are cloned from (default: the active one) |
+| `-CloneFrom <name>` | Thetis/NereusSDR/Lyra: the existing profile new ones are cloned from (default: the active one) |
+| `-LyraExport` | Write a `.lyra` restore file even when Lyra is closed |
+| `-LyraFile <path>` | Read Lyra profiles from a `.lyra` backup instead of the registry (writes then go to a `.lyra` file) |
 | `-SetActive <name>` / `-NoActive` | Set, or leave alone, the destination's active profile |
 | `-WhatIf` / `-Review` / `-Yes` | Preview only / approve each change / no final prompt |
 | `-NoRules` | Straight mapping, no overrides |
@@ -86,6 +89,20 @@ The apps don't define EQ bands the same way, so curves are converted by **respon
   - `eqGain`: what happens to the source's EQ gain (Zeus EQ input + output + input trim, or AetherSDR's EQ gain). `keep` (default) writes it into the curve preamp. `zero` writes 0 dB. A number caps it, e.g. `3`. AetherSDR profiles often run +12 dB of EQ gain into their own compressor and limiter. In WDSP the same preamp drives the leveler, CFC and ALC, so `zero` or a low cap is usually right for AetherSDR sources.
   - AetherSDR has no TX filter, so for an AetherSDR source the fit range comes from its High-Pass and Low-Pass EQ bands (for example 76–3200 Hz). The destination's TX filter is left as it is.
   - The run log shows the point count, Q range, EQ gain and fit error for each profile, so you can compare settings with `-WhatIf`.
+
+## Lyra
+
+[Lyra](https://github.com/N8SDR1/Lyra-SDR-cpp) keeps its settings in the registry (`HKCU\Software\N8SDR\Lyra-cpp`; the ASIO build uses `Lyra-cpp-ASIO`). Each TX profile is a JSON string under `profiles\item`. A profile named `Default` is the key's `(Default)` value.
+
+- **TX EQ:** 10 conventional (RBJ) bands at 48 kHz ahead of WDSP: Peak, Lo/Hi Shelf, 12 dB/oct High/Low-Pass with Q. EQ makeup is an output trim, so the source's EQ gain goes there (`options.Lyra.eqGain`).
+  - **From Zeus or AetherSDR**, bands are copied band for band, plus Zeus input-strip cuts as High/Low-Pass bands and the multiband makeup tone as shelves/peaks. If that comes to more than 10 bands, the curve is fitted instead.
+  - **From Thetis or NereusSDR**, the WDSP curve (and an active CFC post-EQ) is computed and least-squares fitted with 10 peaks across the TX filter passband. The run log prints the fit error.
+  - **Lyra → other apps:** Lyra's band types go along; BandPass and Notch bands have no equivalent and are dropped (noted).
+- **Carried 1:1:** TX filter (`txFilterLow` / `txBandwidth`), Leveler on / max gain / decay, ALC max gain, phase rotator on/off. Lyra passes the leveler and ALC numbers to WDSP unconverted, the same as Thetis.
+- **Speech rack:** gate ↔ Zeus noise gate / Thetis-NereusSDR DEXP, AGC ↔ Zeus broadcast AGC, de-esser ↔ Zeus de-esser. **Plate** ↔ reverb (decay set by ear).
+- **Not carried:** the 5-band Combinator except Lyra → Lyra (`options.Lyra.compressorToCombinator` maps a single-band compressor onto it); mic gain unless `options.Lyra.carryMicGain` is on; CFC, CESSB and PROC have no Lyra stage.
+- **Writing:** with Lyra closed, the whole Lyra registry key is exported to `Documents\SdrConvert\Backups\Lyra_<timestamp>\` first (double-click the `.reg` to restore), then the profile is written and read back. With Lyra running (or `-LyraExport`), a `.lyra` file goes to `Documents\SdrConvert\Lyra\`: in Lyra, **Settings → Backup & Restore → Restore from file…**, tick only **TX / RX profiles**.
+- Lyra applies a profile when you load it, so load the converted profile once in Lyra's profile list.
 
 ## Zeus TX Audio Suite → AetherTX
 
@@ -124,7 +141,8 @@ Each gap is listed in the run's notes.
 - **Thetis legacy EQ and CFC sliders:** whole-dB only, so values are rounded to within ±0.5 dB. The parametric EQ curve keeps its decimals.
 - **Radio-side settings** (RF/Tune power, mic level, PROC on/off, Aether's TX filter): not part of the profiles these scripts edit.
 - **Non-audio fields** (mic input settings and the like): new Thetis/NereusSDR profiles inherit these from the clone seed.
-- **Thetis/NereusSDR → Zeus/AetherSDR** still copies EQ points 1:1; the reverse fit is planned.
+- **Thetis/NereusSDR → Zeus/AetherSDR** still copies EQ points 1:1; the reverse fit is planned (Thetis/NereusSDR → Lyra is fitted).
+- **Lyra → Zeus:** Zeus gets the 10 bands' frequency, gain and Q; their types (shelf, high/low-pass) aren't carried by the Zeus writer.
 
 ## Rules
 

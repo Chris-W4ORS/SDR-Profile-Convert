@@ -280,9 +280,9 @@ function ConvertTo-WdspFittedCanon {
     if ($maxErr -gt 1.5) { Add-Note $canon ("$app EQ fit is off by up to {0:0.0} dB somewhere in {1}-{2} Hz - check the TX EQ panel against the source." -f $maxErr, $fLo, $fHi) }
     if ([math]::Abs($total) -gt 15) { Add-Note $canon "total EQ gain $total dB is beyond the legacy preamp range; parametric preamp carries it." 'DarkGray' }
 
-    # Zeus noise gate -> DEXP (per profile). DEXP sits ahead of the EQ preamp, so the trim is taken off the threshold.
+    # Zeus / Lyra noise gate -> DEXP (per profile). DEXP sits ahead of the EQ preamp, so the trim is taken off the threshold.
     $g = $canon.noiseGate
-    if ($(if ($canon.source.origin) { $canon.source.origin } else { $canon.source.app }) -eq 'Zeus' -and $g -and $null -ne $g.enabled -and [bool](Get-SdrOption $rules $app 'gateToDexp' $true)) {
+    if ($(if ($canon.source.origin) { $canon.source.origin } else { $canon.source.app }) -in @('Zeus', 'Lyra') -and $g -and $null -ne $g.enabled -and [bool](Get-SdrOption $rules $app 'gateToDexp' $true)) {
         $d = [ordered]@{}; foreach ($k in $canon.dexp.Keys) { $d[$k] = $canon.dexp[$k] }
         $d.enabled = [bool]$g.enabled
         if ($null -ne $g.thresholdDb) { $d.thresholdDb = [math]::Round((Clamp ([double]$g.thresholdDb - $trim) -80 0), 1) }

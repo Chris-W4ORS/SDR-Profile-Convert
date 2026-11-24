@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  All-in-one TX audio profile converter: Thetis <-> NereusSDR <-> Zeus <-> AetherSDR <-> canonical JSON.
+  All-in-one TX audio profile converter: Thetis <-> NereusSDR <-> Zeus <-> AetherSDR <-> Lyra <-> canonical JSON.
 
 .DESCRIPTION
   Pick a source app and profile(s), pick a destination app and profile name(s).
@@ -10,7 +10,8 @@
   every run leaves a log plus before/after canonical JSON in
   Documents\SdrConvert\Logs\Convert_<timestamp>\.
 
-  Close Thetis / NereusSDR / AetherSDR before writing to them.
+  Close Thetis / NereusSDR / AetherSDR / Lyra before writing to them (if Lyra or
+  AetherSDR is running, they get an import file instead).
   Zeus must be RUNNING (it is driven over its local REST API) - don't transmit.
 
 .EXAMPLE
@@ -22,13 +23,15 @@
   .\Convert-SdrProfile.ps1 -From Zeus -FromProfile "Ray 3k New" -To Nereus -ToProfile "Ray 3k (from Zeus)" -Review
 .EXAMPLE
   .\Convert-SdrProfile.ps1 -From Thetis -All -To Aether -WhatIf
+.EXAMPLE
+  .\Convert-SdrProfile.ps1 -From Nereus -FromProfile "Chris 4k Original New" -To Lyra -ToProfile "Chris 4k" -WhatIf
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Thetis', 'Nereus', 'Zeus', 'Aether', 'File')][string]$From,
+    [ValidateSet('Thetis', 'Nereus', 'Zeus', 'Aether', 'Lyra', 'File')][string]$From,
     [string[]]$FromProfile,
     [switch]$All,
-    [ValidateSet('Thetis', 'Nereus', 'Zeus', 'Aether', 'File')][string]$To,
+    [ValidateSet('Thetis', 'Nereus', 'Zeus', 'Aether', 'Lyra', 'File')][string]$To,
     [string[]]$ToProfile,
     [string]$SetActive,
     [switch]$NoActive,
@@ -36,13 +39,16 @@ param(
     [switch]$WhatIf,        # read + rules + preview only; nothing written
     [switch]$Yes,           # skip the final "write N profiles?" confirmation
     [switch]$AetherExport,  # write Aether import files even if the library is editable
-    [string]$CloneFrom,     # Thetis/Nereus: existing profile new ones are cloned from (default: the active profile)
+    [switch]$LyraExport,    # write a .lyra restore file even if the registry is editable
+    [string]$LyraFile,      # read Lyra profiles from a .lyra backup instead of the registry (writes go to a .lyra file)
+    [string]$CloneFrom,     # Thetis/Nereus/Lyra: existing profile new ones are cloned from (default: the active profile)
     [string]$RulesPath = (Join-Path $PSScriptRoot 'SdrConvert.rules.json'),
     [switch]$NoRules
 )
 
 $ErrorActionPreference = 'Stop'
-foreach ($f in 'Common', 'ThetisFamily', 'Thetis', 'Nereus', 'Zeus', 'Aether') { . (Join-Path $PSScriptRoot "lib\$f.ps1") }
+foreach ($f in 'Common', 'ThetisFamily', 'Thetis', 'Nereus', 'Zeus', 'Aether', 'Lyra') { . (Join-Path $PSScriptRoot "lib\$f.ps1") }
+if ($LyraFile) { $script:LyraFile = (Resolve-Path -LiteralPath $LyraFile).Path }
 
 # ---------------------------------------------------------------------------
 # "File" adapter - canonical JSON, useful as an archive / hand-edit / hand-off
@@ -73,8 +79,8 @@ function Show-CanonSummary {
     Write-Log ("    cfc {0} [{1}] postEq {2} preComp {3} | phRot {4} ({5} st) | comp {6} | gate {7} | rxEq {8} | extraEq {9}" -f (& $f $c.cfc.enabled), (& $f $c.cfc.mode), (& $f $c.cfc.postEqEnabled), (& $f $c.cfc.preCompDb), (& $f $c.phaseRotator.enabled), (& $f $c.phaseRotator.stages), (& $f $c.compressor.enabled), (& $f $c.noiseGate.enabled), $(if ($c.rxEq) { 'yes' } else { '-' }), $(if ($c.extraEq) { $c.extraEq.label } else { '-' })) DarkGray
 }
 
-$apps = @('Thetis', 'Nereus', 'Zeus', 'Aether', 'File')
-$labels = @{ Thetis = 'Thetis'; Nereus = 'NereusSDR'; Zeus = 'Zeus'; Aether = 'AetherSDR'; File = 'Canonical JSON file' }
+$apps = @('Thetis', 'Nereus', 'Zeus', 'Aether', 'Lyra', 'File')
+$labels = @{ Thetis = 'Thetis'; Nereus = 'NereusSDR'; Zeus = 'Zeus'; Aether = 'AetherSDR'; Lyra = 'Lyra'; File = 'Canonical JSON file' }
 
 Initialize-SdrLog 'Convert'
 Write-Head "SdrConvert - TX profile converter"
@@ -121,7 +127,7 @@ try {
     } else { $dstNames = @($srcNames) }
 
     if ($CloneFrom) {
-        if ($To -notin @('Thetis', 'Nereus')) { Write-Log "[WARN] -CloneFrom only applies to Thetis / NereusSDR - ignored." Yellow }
+        if ($To -notin @('Thetis', 'Nereus', 'Lyra')) { Write-Log "[WARN] -CloneFrom only applies to Thetis / NereusSDR / Lyra - ignored." Yellow }
         elseif (-not ($dstList | Where-Object { $_.Name -eq $CloneFrom })) { throw "-CloneFrom '$CloneFrom' is not a $($labels[$To]) profile (copy it there first)." }
         else { $script:CloneFrom = $CloneFrom; Write-Log "New profiles will be cloned from '$CloneFrom'." DarkGray }
     }
@@ -148,13 +154,16 @@ try {
 
     if ($WhatIf) {
         if ($To -in @('Thetis', 'Nereus')) { Show-TfEqPreview $jobs $To $rules }
+        elseif ($To -eq 'Lyra') { Show-LyraPreview $jobs $rules }
         Write-Log ""; Write-Log "-WhatIf: nothing written. Canonical before/after JSON is in $script:RunDir" Yellow; return
     }
     if (-not $Yes -and -not (Confirm-Yes "`nWrite $($jobs.Count) profile(s) to $($labels[$To])?")) { Write-Log "Cancelled." Yellow; return }
 
     # ---- write --------------------------------------------------------------------
     Write-Head "Writing to $($labels[$To])"
-    if ($To -eq 'Aether') { Aether_BeginWrite -ForceExport:$AetherExport } else { & "${To}_BeginWrite" }
+    if ($To -eq 'Aether') { Aether_BeginWrite -ForceExport:$AetherExport }
+    elseif ($To -eq 'Lyra') { Lyra_BeginWrite -ForceExport:$LyraExport }
+    else { & "${To}_BeginWrite" }
     $ok = 0; $fail = 0
     foreach ($j in $jobs) {
         Write-Log ""; Write-Log "  $($j.Dst)" White

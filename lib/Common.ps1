@@ -244,10 +244,17 @@ function Get-BiquadDb {
     # Magnitude (dB) of one conventional (RBJ-cookbook style) EQ band at f Hz,
     # as Zeus and AetherSDR define it: width scales with frequency, Q is relative.
     # Analog prototype; at voice frequencies (<5 kHz, 48 kHz rate) the digital
-    # warp is negligible. HighPass/LowPass are Butterworth of order slope/6.
+    # warp is negligible. HighPass/LowPass at 12 dB/oct are the RBJ second-order
+    # sections with their own Q (Lyra; Q 0.707 is Butterworth); other slopes are
+    # Butterworth of order slope/6.
     param([string]$type, [double]$f0, [double]$gainDb, [double]$q, [int]$slope, [double]$f)
     if ($f0 -le 0 -or $f -le 0) { return 0.0 }
     $w = $f / $f0
+    if ($slope -eq 12 -and $q -gt 0 -and $type -in @('HighPass', 'LowPass')) {
+        $w2 = $w * $w; $den = (1 - $w2) * (1 - $w2) + ($w / $q) * ($w / $q)
+        if ($type -eq 'HighPass') { return 10 * [math]::Log10($w2 * $w2 / $den) }
+        return -10 * [math]::Log10($den)
+    }
     switch ($type) {
         'HighPass' { $n = [math]::Max(1, [int][math]::Round($slope / 6)); return -10 * [math]::Log10(1 + [math]::Pow(1 / $w, 2 * $n)) }
         'LowPass'  { $n = [math]::Max(1, [int][math]::Round($slope / 6)); return -10 * [math]::Log10(1 + [math]::Pow($w, 2 * $n)) }

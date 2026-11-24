@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.0 - 2026-11-24
+
+### Added
+- **Lyra** (N8SDR Lyra-SDR-cpp) as a source and destination (`-From Lyra` / `-To Lyra`). Reads and writes Lyra's TX profiles in the registry, with a full `reg export` backup and a read-back check, or writes a `.lyra` file to restore in Lyra when it is running (`-LyraExport` forces this). `-LyraFile` reads profiles from a `.lyra` backup instead.
+- **Thetis/NereusSDR → Lyra EQ fit.** The WDSP curve, plus an active CFC post-EQ, is least-squares fitted with Lyra's 10 conventional peaks across the TX filter passband; the run log shows the fit error. Zeus/AetherSDR → Lyra copies the bands one to one (with input-strip cuts and the multiband makeup tone).
+- `options.Lyra` in the rules file: `eqGain`, `inputCuts`, `multibandToEq`, `includeCfcPostEq`, `gateFromDexp`, `carryMicGain`, `compressorToCombinator`.
+- `Probe-SdrStores.ps1` inventories Lyra's registry profiles and flags schema drift.
+
+### Changed
+- 12 dB/oct High-Pass / Low-Pass bands in the EQ maths now use their own Q (Lyra's are RBJ sections with adjustable Q). At Q 0.707, the only value used before, the result is unchanged.
+- AetherTX keeps High-Pass / Low-Pass band types from a Lyra source instead of turning them into peaks.
+- A Lyra speech gate maps to DEXP for Thetis/NereusSDR, as the Zeus noise gate does.
+
 ## v1.2.0 - 2026-11-11
 
 ### Added

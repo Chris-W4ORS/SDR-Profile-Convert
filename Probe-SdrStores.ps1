@@ -1,15 +1,17 @@
 <#
 .SYNOPSIS
-  READ-ONLY inventory of Thetis / NereusSDR / Zeus / AetherSDR profile storage on this PC.
+  READ-ONLY inventory of Thetis / NereusSDR / Zeus / AetherSDR / Lyra profile storage on this PC.
   Writes probe.txt + probe.json (+ decoded samples) to Documents\SdrConvert\Probe_<ts>\ and
   flags DRIFT wherever what's on disk no longer matches what Convert-SdrProfile.ps1 expects.
   Changes nothing: Zeus is only sent GET requests; no file is written outside the probe folder.
+  Lyra's registry key is only read.
   Run it after every app update, and send the probe folder back when something drifts.
 #>
 [CmdletBinding()] param([switch]$NoZeusScrape)
 $ErrorActionPreference = 'Continue'
 . (Join-Path $PSScriptRoot 'lib\Common.ps1')
 . (Join-Path $PSScriptRoot 'lib\ThetisFamily.ps1')
+. (Join-Path $PSScriptRoot 'lib\Lyra.ps1')
 
 $out = Join-Path $env:USERPROFILE "Documents\SdrConvert\Probe_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 New-Item -ItemType Directory -Path (Join-Path $out 'samples') -Force | Out-Null
@@ -211,6 +213,47 @@ foreach ($d in ($cands | Where-Object { Test-Path $_ })) {
 }
 if (-not $A.dirs) { Drift 'Aether' 'no AetherSDR config folder found' }
 $Report.aether = $A
+
+# =============================================================================
+Write-Head "Lyra"
+$L = [ordered]@{}
+$L.exe = Get-ExeVersion @("$env:ProgramFiles\Lyra\lyra.exe", "$env:LOCALAPPDATA\Programs\Lyra\lyra.exe")
+$L.running = Test-ProcRunning @('lyra')
+$L.apps = @()
+$lyApps = @(Find-LyraRegistryApps)
+if (-not $lyApps) {
+    $any = if (Test-IsWindowsHost) { [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\N8SDR') } else { $null }
+    if ($any) { $L.n8sdrSubkeys = @($any.GetSubKeyNames()); $any.Close() }
+    if ($L.exe) { Drift 'Lyra' 'Lyra is installed but HKCU\Software\N8SDR\Lyra-cpp*\profiles\item was not found (save a profile in Lyra once, or settings moved)' }
+    else { Write-Log "  Lyra not found (not installed?)." DarkGray }
+}
+foreach ($ap in $lyApps) {
+    $sub = "Software\N8SDR\$ap"
+    $r = Read-LyraRegistryProfiles $sub
+    $e = [ordered]@{ key = "HKCU\$sub"; profiles = @($r.Items.Keys); order = @($r.Order); active = $r.Active }
+    $pk = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$sub\profiles")
+    if ($pk) { try { $e.orderKind = "$($pk.GetValueKind('order'))" } catch { $e.orderKind = 'absent' }; $pk.Close() }
+    $e.schemas = @(); $paths = New-Object System.Collections.Generic.SortedSet[string]
+    foreach ($n in $r.Items.Keys) {
+        try {
+            $o = ConvertTo-HT ($r.Items[$n] | ConvertFrom-Json)
+            $e.schemas += "$n=v$($o.schemaVersion)"
+            foreach ($x in (Get-KeyPaths $o)) { [void]$paths.Add($x) }
+            if ([int](ConvertTo-Num $o.schemaVersion 0) -gt $script:LyraSchemaKnown) { Drift 'Lyra' "profile '$n' is schema v$($o.schemaVersion); the adapter was written for v$script:LyraSchemaKnown - review the probe" }
+            if ($o.eq -and @($o.eq.bands).Count -ne 10) { Drift 'Lyra' "profile '$n' has $(@($o.eq.bands).Count) EQ bands (adapter expects 10)" }
+        } catch { Drift 'Lyra' "profile '$n' is not readable JSON" }
+    }
+    $e.keyPaths = @($paths)
+    $first = @($r.Items.Keys)[0]
+    if ($first) { Set-Content (Join-Path $out "samples\Lyra-$ap-first-profile.json") $r.Items[$first] -Encoding UTF8 }
+    foreach ($k in 'eq.bands[].f', 'eq.bands[].g', 'eq.bands[].q', 'eq.bands[].type', 'eq.bands[].en', 'eq.makeupDb', 'eq.bypass', 'txFilterLow', 'txBandwidth', 'levelerOn', 'levelerMaxGainLinear', 'alcMaxGainLinear', 'phrotEnabled', 'speech.gateOn', 'plate.bypass') {
+        if ($r.Items.Count -and $e.keyPaths -notcontains $k) { Drift 'Lyra' "profile field '$k' not in any profile (schema changed?)" }
+    }
+    if ($r.Order | Where-Object { -not $r.Items.Contains($_) }) { Write-Log "  info: profiles/order lists names with no saved profile: $((@($r.Order | Where-Object { -not $r.Items.Contains($_) })) -join ', ')" DarkGray }
+    Write-Log ("  HKCU\{0}: {1} profiles ({2}), active '{3}', order stored as {4}" -f $sub, $r.Items.Count, ($e.schemas -join ' '), $r.Active, $e.orderKind) Green
+    $L.apps += $e
+}
+$Report.lyra = $L
 
 # =============================================================================
 Write-Head "Summary"
